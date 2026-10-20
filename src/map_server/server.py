@@ -17,6 +17,8 @@ PANEL_API_KEY = os.getenv("PANEL_API_KEY", "").strip()
 IMPERSONATE = os.getenv("CURL_CFFI_IMPERSONATE", "chrome").strip() or "chrome"
 HOST = os.getenv("MAP_HOST", "127.0.0.1").strip()
 PORT = int(os.getenv("MAP_PORT", "8765"))
+if HOST not in {"127.0.0.1", "::1", "localhost"}:
+    raise RuntimeError("MAP must bind to localhost until an authenticated remote transport is configured.")
 
 mcp = FastMCP("Model Access Panel (MAP)", host=HOST, port=PORT)
 
@@ -41,7 +43,7 @@ def _validate_config() -> None:
 
 def _api_get(path: str, params: dict | None = None) -> dict:
     _validate_config()
-    if not path.startswith("/api/client/") or ".." in path.split("/"):
+    if (path != "/api/client" and not path.startswith("/api/client/")) or ".." in path.split("/"):
         raise ValueError("Only fixed Pterodactyl Client API paths are allowed.")
     response = requests.get(
         f"{PANEL_BASE_URL}{path}",
