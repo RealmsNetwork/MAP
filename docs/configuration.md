@@ -161,3 +161,5 @@ Set MCSManager `panel_version` to `9.x` or `10.x` so MAP can choose the correct 
 Prefer `deploy/configure_panels.py` for systemd. It reads keys with hidden input and writes the panel array in base64 form to `/etc/realmsnetwork-map/map.env`. The file should remain root-owned, group-readable by the MAP account, and mode `0640`.
 
 Base64 is encoding, not encryption. Filesystem permissions still matter. The helper preserves the server name and request/response/file-size limits and prompts for each provider's authentication type. Never put secrets in command-line arguments, committed JSON, screenshots, bug reports, or prompts.
+
+MAP's OAuth and AMP session caches are process-local and keyed only by non-secret panel identity fields. **Restart the MAP service after rotating an OAuth client secret, AMP password, or TOTP configuration** so cached tokens and sessions are discarded.

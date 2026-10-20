@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import ipaddress
 import json
 import os
@@ -102,6 +101,8 @@ def _safe_json(value: Any) -> Any:
 
 
 
+# These caches are memory-only and are cleared when MAP restarts. Cache keys deliberately
+# contain panel identity fields only, never passwords, client secrets, or derived fingerprints.
 _OAUTH_CACHE: dict[str, tuple[str, float]] = {}
 _OAUTH_LOCK = threading.Lock()
 _AMP_SESSION_CACHE: dict[str, tuple[str, float]] = {}
@@ -123,8 +124,7 @@ def _oauth_access_token(panel: dict[str, Any]) -> str:
     cache_key = "|".join((
         panel_id,
         str(panel.get("base_url", "")),
-        str(panel.get("oauth_client_id", "")),
-        hashlib.sha256(str(panel.get("oauth_client_secret", "")).encode("utf-8")).hexdigest(),
+        str(client_id),
         str(panel.get("oauth_token_path", "/oauth2/token")),
     ))
     now = time.monotonic()
@@ -197,8 +197,7 @@ def _amp_session(panel: dict[str, Any]) -> str:
     password = str(panel.get("auth_password", ""))
     if not username or not password:
         raise RuntimeError(f"AMP panel '{panel_id}' requires auth_username and auth_password.")
-    password_fingerprint = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    cache_key = "|".join((panel_id, base_url, username, password_fingerprint))
+    cache_key = "|".join((panel_id, base_url, username))
     now = time.monotonic()
     cached = _AMP_SESSION_CACHE.get(cache_key)
     if cached and cached[1] > now + 30:

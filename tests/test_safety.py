@@ -444,6 +444,8 @@ def test_pufferpanel_oauth_token_is_cached_and_used(monkeypatch):
     assert api_calls[0][1] == "https://puffer.example.test/api/servers"
     assert api_calls[0][2]["headers"]["Authorization"] == "Bearer cached-access-token"
     assert "oauth-client-secret" not in json.dumps(server.list_panels())
+    assert all("oauth-client-secret" not in key for key in client._OAUTH_CACHE)
+    assert all("oauth-client-secret" not in value[0] for value in client._OAUTH_CACHE.values())
 
 
 def test_pterodactyl_style_tools_reject_unrelated_panel_types(monkeypatch):
@@ -587,6 +589,8 @@ def test_amp_session_authenticates_once_and_injects_session_id(monkeypatch):
     assert first["data"]["SESSIONID"] == "[REDACTED]"
     assert "amp-session-secret" not in json.dumps(first)
     assert "hidden-amp-password" not in json.dumps(server.list_panels())
+    assert all("hidden-amp-password" not in key for key in client._AMP_SESSION_CACHE)
+    assert all("hidden-amp-password" not in value[0] for value in client._AMP_SESSION_CACHE.values())
 
 
 def test_amp_native_api_requires_post_and_json_object(monkeypatch):
