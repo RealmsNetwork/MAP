@@ -8,17 +8,39 @@ Tool schemas are exposed by the server. The chosen panel's API version and key d
 
 Lists panel IDs, names, base URLs, and which API namespaces have configured keys, without returning key values.
 
-### `panel_status(panel_id, api="application")`
+### `panel_status(panel_id, api="auto")`
 
-Makes a request against the selected namespace. A 401/403 usually indicates key/permission problems; a 404 may mean an endpoint is absent for the panel version.
+Checks the selected provider. `auto` uses the Client API for Pterodactyl/Pelican and a native status path for other providers; MCSManager defaults to `/api/overview`, while AMP uses its POST `Core/GetStatus` method. A 401/403 usually indicates authentication/permission problems; a 404 may mean the configured status endpoint is unavailable.
 
 ### `panel_api_request(panel_id, api, method, path, query_params=None, json_body=None, raw_body=None, content_type=None, timeout_seconds=30)`
 
-General-purpose endpoint tool. Choose endpoints documented for your panel version. `path` is relative to the selected namespace; query parameters are separate. Supported methods: GET, POST, PUT, PATCH, DELETE. Supply at most one of JSON body and raw text body.
+General-purpose endpoint tool. For Pterodactyl/Pelican, `api` is a supported namespace and `path` is relative to it. For MCSManager, Crafty, PufferPanel, Calagopus, AMP, or generic REST, use `api="native"`; `path` is relative to the configured `api_base_path`. Query parameters are passed separately. Supported methods: GET, POST, PUT, PATCH, DELETE. Supply at most one of JSON body and raw text body.
 
 This tool can make destructive changes when the key permits them. Review the method, endpoint, target object, and body before write requests.
 
-## Dedicated server tools
+
+## CubeCoders AMP
+
+AMP's API differs from REST panels that use bearer keys. Set `provider` to `amp` and configure `auth_username`/`auth_password` (plus `amp_totp_token` when needed). MAP submits the login request, caches the returned `SESSIONID`, and injects it into native JSON POST requests. Use `panel_api_request` with `api="native"`, `method="POST"`, and the documented method path, such as `Core/GetStatus`. The request body must be a JSON object. `panel_status` uses AMP's `Core/GetStatus` POST path.
+
+Create a least-privilege AMP account. MAP does not expose the password/session token through `list_panels` and redacts session IDs from responses. The actual permissions granted by the AMP account still determine what it can do.
+
+## MCSManager-native tools
+
+These tools use MCSManager's native API rather than sending Pterodactyl routes to it.
+
+| Tool | Parameters | Purpose |
+| --- | --- | --- |
+| `mcsmanager_list_instances` | `panel_id, daemon_id, page=1, page_size=50` | List instances for a daemon. Page size is capped at 50. |
+| `mcsmanager_instance_action` | `panel_id, daemon_id, instance_uuid, action` | Start, stop, restart, or kill an instance. |
+| `mcsmanager_instance_command` | `panel_id, daemon_id, instance_uuid, command` | Send a command through the native HTTP API. |
+| `mcsmanager_instance_output_log` | `panel_id, daemon_id, instance_uuid, size="10KB"` | Read the instance output log. |
+
+Calagopus uses its own API rather than Pterodactyl-compatible endpoints. Use the instance's `/api` documentation and `panel_api_request` with `api="native"`; configure `api_base_path` as `/api` and use a Calagopus API key.
+
+For other MCSManager endpoints, use `panel_api_request` with `api="native"` and the endpoint documented for the installed version. MCSManager 9.x and 10.x differ; verify endpoint semantics before making writes.
+
+## Pterodactyl/Pelican-compatible server tools
 
 | Tool | Parameters | Purpose |
 | --- | --- | --- |

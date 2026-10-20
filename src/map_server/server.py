@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +28,7 @@ from .config import (
     _token_for,
 )
 from .security import BearerGuard
+from .providers import PTERODACTYL_COMPATIBLE, normalize_provider
 
 
 mcp = FastMCP(MAP_SERVER_NAME, host=HOST, port=PORT)
@@ -34,29 +36,78 @@ mcp = FastMCP(MAP_SERVER_NAME, host=HOST, port=PORT)
 
 @mcp.tool()
 def list_panels() -> dict[str, Any]:
-    """List configured panels and available API-key types without revealing secret values."""
+    """List configured panel providers and auth readiness without revealing credentials."""
     result = []
     for panel in _panels().values():
-        parsed = urlparse(panel["base_url"])
+        provider = normalize_provider(panel.get("provider"))
+        ptero_compatible = provider in PTERODACTYL_COMPATIBLE
+        if ptero_compatible:
+            apis_available = {
+                "client": bool(panel.get("client_api_key")),
+                "application": bool(panel.get("application_api_key") or panel.get("admin_api_key")),
+                "admin": provider == "pterodactyl" and bool(panel.get("admin_api_key")),
+            }
+            api_mode = "pterodactyl_compatible"
+        else:
+            apis_available = {"native": bool(
+                panel.get("api_key")
+                or (panel.get("oauth_client_id") and panel.get("oauth_client_secret"))
+                or (panel.get("auth_type") == "basic" and panel.get("auth_username") and panel.get("auth_password"))
+                or (provider == "amp" and panel.get("auth_username") and panel.get("auth_password"))
+                or panel.get("auth_type") == "none"
+            )}
+            api_mode = "native"
         result.append({
             "id": panel["id"],
             "name": panel["name"],
             "base_url": panel["base_url"],
+            "provider": provider,
+            "panel_version": panel.get("panel_version", "auto"),
+            "api_base_path": panel.get("api_base_path", ""),
+            "api_mode": api_mode,
             "configured": bool(panel["base_url"]),
-            "https": parsed.scheme == "https",
-            "apis_available": {
-                "client": bool(panel.get("client_api_key")),
-                "application": bool(panel.get("application_api_key") or panel.get("admin_api_key")),
-                "admin": bool(panel.get("admin_api_key")),
-            },
+            "https": urlparse(panel["base_url"]).scheme == "https",
+            "auth_type": panel.get("auth_type", "bearer"),
+            "apis_available": apis_available,
+            "dedicated_server_tools": ptero_compatible or provider == "mcsmanager",
         })
     return {"panels": result, "count": len(result)}
 
 
+def _require_panel_provider(panel_id: str, allowed: set[str], operation: str) -> dict[str, Any]:
+    panel = _panel(panel_id)
+    provider = normalize_provider(panel.get("provider"))
+    if provider not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(
+            f"{operation} is not implemented for provider '{provider}'. "
+            f"Supported providers for this tool: {expected}. Use panel_api_request with api='native' for other panels."
+        )
+    return panel
+
+
 @mcp.tool()
-def panel_status(panel_id: str, api: str = "application") -> dict[str, Any]:
-    """Check panel API connectivity by requesting the selected API namespace root."""
-    return _api_request(panel_id, api, "GET", "")
+def panel_status(panel_id: str, api: str = "auto") -> dict[str, Any]:
+    """Check connectivity to the configured panel's API."""
+    panel = _panel(panel_id)
+    provider = normalize_provider(panel.get("provider"))
+    if api == "auto":
+        if provider in PTERODACTYL_COMPATIBLE:
+            if panel.get("client_api_key"):
+                api = "client"
+            elif panel.get("application_api_key") or panel.get("admin_api_key"):
+                api = "application"
+            else:
+                api = "client"
+            path = ""
+        else:
+            api = "native"
+            path = str(panel.get("status_path") or ("Core/GetStatus" if provider == "amp" else ""))
+    else:
+        path = ""
+    if provider == "amp":
+        return _api_request(panel_id, api, "POST", path, json_body={})
+    return _api_request(panel_id, api, "GET", path)
 
 
 @mcp.tool()
@@ -71,10 +122,11 @@ def panel_api_request(
     content_type: str | None = None,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
-    """Request any relative Pterodactyl Client, Application, or Admin API endpoint.
+    """Request a relative endpoint from any supported panel API.
 
-    Supports read and write methods. Use the panel-version API docs to choose namespace,
-    endpoint, method, query parameters, and request body. Arbitrary external URLs are rejected.
+    Pterodactyl/Pelican use client/application (and Pterodactyl 2.x admin) namespaces.
+    MCSManager, Crafty, PufferPanel, and generic REST profiles use api='native'.
+    Arbitrary external URLs are rejected; writes can be destructive.
     """
     return _api_request(panel_id, api, method, path, query_params, json_body, raw_body, content_type, timeout_seconds)
 
@@ -84,12 +136,92 @@ def list_servers(panel_id: str, page: int = 1, api: str = "application") -> dict
     """List servers using the Application API, or the Client API when api='client'."""
     if page < 1 or page > 1000:
         raise ValueError("page must be between 1 and 1000.")
-    return _api_request(panel_id, api, "GET", "servers" if api != "client" else "", {"page": page})
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "list_servers")
+    if api == "client":
+        # Pterodactyl 1.x and 2.x list the user's servers at GET /api/client.
+        return _api_request(panel_id, api, "GET", "", {"page": page})
+    if api == "application":
+        return _api_request(panel_id, api, "GET", "servers", {"page": page})
+    raise ValueError("api must be client or application for list_servers.")
+
+
+
+@mcp.tool()
+def mcsmanager_list_instances(
+    panel_id: str, daemon_id: str, page: int = 1, page_size: int = 50
+) -> dict[str, Any]:
+    """List MCSManager instances for a daemon using the native MCSManager API."""
+    _require_panel_provider(panel_id, {"mcsmanager"}, "mcsmanager_list_instances")
+    if not daemon_id or len(daemon_id) > 256:
+        raise ValueError("daemon_id must be between 1 and 256 characters.")
+    if page < 1 or page > 1000 or page_size < 1 or page_size > 50:
+        raise ValueError("page must be 1–1000 and page_size must be 1–50.")
+    return _api_request(
+        panel_id, "native", "GET", "service/remote_service_instances",
+        {"daemonId": daemon_id, "page": page, "page_size": page_size},
+    )
+
+
+@mcp.tool()
+def mcsmanager_instance_action(
+    panel_id: str, daemon_id: str, instance_uuid: str, action: str
+) -> dict[str, Any]:
+    """Start, stop, restart, or kill an MCSManager instance using its native API."""
+    _require_panel_provider(panel_id, {"mcsmanager"}, "mcsmanager_instance_action")
+    if not daemon_id or len(daemon_id) > 256:
+        raise ValueError("daemon_id must be between 1 and 256 characters.")
+    if not SERVER_ID_RE.fullmatch(instance_uuid or ""):
+        raise ValueError("instance_uuid contains unsupported characters.")
+    action = action.strip().lower()
+    routes = {"start": "open", "stop": "stop", "restart": "restart", "kill": "kill"}
+    if action not in routes:
+        raise ValueError("action must be start, stop, restart, or kill.")
+    return _api_request(
+        panel_id, "native", "GET", f"protected_instance/{routes[action]}",
+        {"uuid": instance_uuid, "daemonId": daemon_id},
+    )
+
+
+@mcp.tool()
+def mcsmanager_instance_command(
+    panel_id: str, daemon_id: str, instance_uuid: str, command: str
+) -> dict[str, Any]:
+    """Send a command to an MCSManager instance through its native HTTP API."""
+    _require_panel_provider(panel_id, {"mcsmanager"}, "mcsmanager_instance_command")
+    if not daemon_id or len(daemon_id) > 256:
+        raise ValueError("daemon_id must be between 1 and 256 characters.")
+    if not SERVER_ID_RE.fullmatch(instance_uuid or ""):
+        raise ValueError("instance_uuid contains unsupported characters.")
+    if not command or len(command) > 10000:
+        raise ValueError("command must be between 1 and 10000 characters.")
+    return _api_request(
+        panel_id, "native", "GET", "protected_instance/command",
+        {"uuid": instance_uuid, "daemonId": daemon_id, "command": command},
+    )
+
+
+@mcp.tool()
+def mcsmanager_instance_output_log(
+    panel_id: str, daemon_id: str, instance_uuid: str, size: str = "10KB"
+) -> dict[str, Any]:
+    """Read the recent output log for an MCSManager instance."""
+    _require_panel_provider(panel_id, {"mcsmanager"}, "mcsmanager_instance_output_log")
+    if not daemon_id or len(daemon_id) > 256:
+        raise ValueError("daemon_id must be between 1 and 256 characters.")
+    if not SERVER_ID_RE.fullmatch(instance_uuid or ""):
+        raise ValueError("instance_uuid contains unsupported characters.")
+    if not re.fullmatch(r"\d+(?:KB)?", size.strip().upper()):
+        raise ValueError("size must be a byte count or a value such as 10KB.")
+    return _api_request(
+        panel_id, "native", "GET", "protected_instance/outputlog",
+        {"uuid": instance_uuid, "daemonId": daemon_id, "size": size.strip().upper()},
+    )
 
 
 @mcp.tool()
 def server_resources(panel_id: str, server_id: str) -> dict[str, Any]:
     """Read live resource usage and running state for a server."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_resources")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     return _api_request(panel_id, "client", "GET", f"servers/{server_id}/resources")
@@ -98,6 +230,7 @@ def server_resources(panel_id: str, server_id: str) -> dict[str, Any]:
 @mcp.tool()
 def server_power(panel_id: str, server_id: str, signal: str) -> dict[str, Any]:
     """Start, stop, restart, or force-kill a server through the Pterodactyl Client API."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_power")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     signal = signal.lower().strip()
@@ -109,6 +242,7 @@ def server_power(panel_id: str, server_id: str, signal: str) -> dict[str, Any]:
 @mcp.tool()
 def server_console_command(panel_id: str, server_id: str, command: str) -> dict[str, Any]:
     """Send a console command to a server. Server state and API permissions still apply."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_console_command")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if not command or len(command) > 10000:
@@ -119,6 +253,7 @@ def server_console_command(panel_id: str, server_id: str, command: str) -> dict[
 @mcp.tool()
 def server_list_files(panel_id: str, server_id: str, directory: str = "/") -> dict[str, Any]:
     """List files and folders in a server directory."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_list_files")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     return _api_request(panel_id, "client", "GET", f"servers/{server_id}/files/list", {"directory": directory})
@@ -127,6 +262,7 @@ def server_list_files(panel_id: str, server_id: str, directory: str = "/") -> di
 @mcp.tool()
 def server_read_file(panel_id: str, server_id: str, file: str) -> dict[str, Any]:
     """Read a text file from the server filesystem."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_read_file")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     return _api_request(panel_id, "client", "GET", f"servers/{server_id}/files/contents", {"file": file})
@@ -135,6 +271,7 @@ def server_read_file(panel_id: str, server_id: str, file: str) -> dict[str, Any]
 @mcp.tool()
 def server_write_file(panel_id: str, server_id: str, file: str, content: str) -> dict[str, Any]:
     """Create or overwrite a text file on a server. Panel permissions apply."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_write_file")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if len(content.encode("utf-8")) > 2_000_000:
@@ -148,6 +285,7 @@ def server_write_file(panel_id: str, server_id: str, file: str, content: str) ->
 @mcp.tool()
 def server_create_directory(panel_id: str, server_id: str, name: str, root: str = "/") -> dict[str, Any]:
     """Create a directory in the server filesystem."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_create_directory")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     return _api_request(panel_id, "client", "POST", f"servers/{server_id}/files/create-folder",
@@ -157,6 +295,7 @@ def server_create_directory(panel_id: str, server_id: str, name: str, root: str 
 @mcp.tool()
 def server_delete_files(panel_id: str, server_id: str, files: list[str], root: str = "/") -> dict[str, Any]:
     """Delete selected server files or folders permanently."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_delete_files")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if not files or len(files) > 500:
@@ -168,6 +307,7 @@ def server_delete_files(panel_id: str, server_id: str, files: list[str], root: s
 @mcp.tool()
 def server_rename_files(panel_id: str, server_id: str, root: str, files: list[dict[str, str]]) -> dict[str, Any]:
     """Rename or move files using a list of from/to pairs."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_rename_files")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if not files or len(files) > 200:
@@ -182,6 +322,7 @@ def server_rename_files(panel_id: str, server_id: str, root: str, files: list[di
 @mcp.tool()
 def server_create_backup(panel_id: str, server_id: str, name: str | None = None, ignored: list[str] | None = None) -> dict[str, Any]:
     """Start a backup for a server."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_create_backup")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     body: dict[str, Any] = {}
@@ -195,6 +336,7 @@ def server_create_backup(panel_id: str, server_id: str, name: str | None = None,
 @mcp.tool()
 def server_list_backups(panel_id: str, server_id: str) -> dict[str, Any]:
     """List backups registered for a server."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_list_backups")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     return _api_request(panel_id, "client", "GET", f"servers/{server_id}/backups")
@@ -203,6 +345,7 @@ def server_list_backups(panel_id: str, server_id: str) -> dict[str, Any]:
 @mcp.tool()
 def server_delete_backup(panel_id: str, server_id: str, backup_id: str) -> dict[str, Any]:
     """Delete a server backup by UUID. This is destructive."""
+    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_delete_backup")
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if not SERVER_ID_RE.fullmatch(backup_id or ""):
@@ -322,7 +465,8 @@ __all__ = [
     "server_resources", "server_power", "server_console_command", "server_list_files",
     "server_read_file", "server_write_file", "server_create_directory", "server_delete_files",
     "server_rename_files", "server_create_backup", "server_list_backups", "server_delete_backup",
-    "server_upload_file_base64", "server_download_file_base64", "BearerGuard",
+    "mcsmanager_list_instances", "mcsmanager_instance_action", "mcsmanager_instance_command",
+    "mcsmanager_instance_output_log", "server_upload_file_base64", "server_download_file_base64", "BearerGuard",
     "_safe_json", "_panel", "_panels", "_token_for", "SUPPORTED_APIS", "SUPPORTED_METHODS",
 ]
 

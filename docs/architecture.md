@@ -1,7 +1,8 @@
 # Architecture
 
 - `config.py` loads environment settings, validates panel identifiers/origins, and selects credentials by API namespace.
-- `client.py` sends requests, redacts response content, and validates signed Wings transfer URLs.
+- `client.py` sends provider-aware requests, applies configurable authentication, refreshes PufferPanel OAuth2 tokens, redacts responses, and validates signed Wings transfer URLs.
+- `providers.py` maps provider types to API prefixes and version-compatibility rules.
 - `security.py` provides the ASGI bearer guard for HTTP transport.
 - `server.py` registers MCP tools and offers HTTP/stdio entry points.
 - `deploy/` contains systemd and interactive configuration files; `docs/` contains operator and contributor guides.

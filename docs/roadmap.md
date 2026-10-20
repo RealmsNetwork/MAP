@@ -7,7 +7,7 @@ This is a working direction, not a promise until implemented and tested.
 - Expand mocked coverage for API routing, authentication, redaction, and signed Wings transfers.
 - Add a low-permission health/diagnostics tool.
 - Improve compact summaries while preserving the generic endpoint escape hatch.
-- Publish versioned releases and a supported panel/fork compatibility matrix.
+- Publish versioned releases and a tested compatibility matrix for each native panel provider and version.
 - Add client configuration examples without credentials.
 
 ## Later
