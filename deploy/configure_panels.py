@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import getpass
+import ipaddress
 import grp
 import json
 import os
@@ -13,11 +14,6 @@ from urllib.parse import urlparse
 
 CONFIG = Path("/etc/realmsnetwork-map/map.env")
 PANEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
-PANEL_KEYS = {
-    "MAP_HOST", "MAP_PORT", "MAP_MCP_BEARER_TOKEN", "MAP_MAX_RESPONSE_CHARS",
-    "MAP_MAX_INLINE_FILE_BYTES", "MAP_LOG_LEVEL", "MAP_TRUSTED_WINGS_HOSTS",
-}
-
 
 def read_settings() -> dict[str, str]:
     result: dict[str, str] = {}
@@ -45,7 +41,7 @@ def main() -> int:
     print("Model Access Panel (MAP) panel setup")
     print("API keys are hidden as you type and are stored only in the root-owned server environment file.")
     while True:
-        raw_count = input("How many Pterodactyl panels should MAP configure? [1]: ").strip()
+        raw_count = input("How many panels should MAP configure? [1]: ").strip()
         if not raw_count:
             count = 1
             break
@@ -67,24 +63,140 @@ def main() -> int:
         name = input(f"Display name [{panel_id}]: ").strip() or panel_id
         base_url = input("Panel base URL (https://...): ").strip().rstrip("/")
         parsed = urlparse(base_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            print("Invalid URL: use an HTTPS panel URL without embedded credentials, query, or fragment.")
+        try:
+            parsed.port
+        except ValueError:
+            print("Invalid panel URL port.")
             return 2
-        client_key = getpass.getpass("Client API key (required for server power/files; leave blank only if not needed): ").strip()
-        application_key = getpass.getpass("Application API key (for panel-wide application endpoints; optional): ").strip()
-        admin_key = getpass.getpass("Root-admin Client API key (for Admin endpoints; optional): ").strip()
-        if not (client_key or application_key or admin_key):
-            print("At least one API key is required for each panel.")
+        try:
+            address = ipaddress.ip_address(parsed.hostname or "")
+        except ValueError:
+            address = None
+        if (
+            not base_url
+            or len(base_url) > 2048
+            or any(char.isspace() for char in base_url)
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or (address and not address.is_global)
+        ):
+            print("Invalid URL: use a public HTTPS panel URL without embedded credentials, query, or fragment.")
             return 2
-        panels.append({
+        provider_choices = {
+            "1": "pterodactyl",
+            "2": "pelican",
+            "3": "mcsmanager",
+            "4": "crafty",
+            "5": "pufferpanel",
+            "6": "generic_rest",
+            "7": "calagopus",
+            "8": "amp",
+        }
+        print("Panel provider: 1) Pterodactyl 2) Pelican 3) MCSManager 4) Crafty Controller 5) PufferPanel 6) Generic REST 7) Calagopus 8) CubeCoders AMP")
+        raw_provider = input("Choose provider [1]: ").strip() or "1"
+        provider = provider_choices.get(raw_provider, raw_provider.lower())
+        if provider not in set(provider_choices.values()):
+            print("Unsupported provider. Choose one of the listed providers.")
+            return 2
+
+        record = {
             "id": panel_id,
             "name": name,
             "base_url": base_url,
-            "client_api_key": client_key,
-            "application_api_key": application_key,
-            "admin_api_key": admin_key,
-        })
+            "provider": provider,
+        }
+        if provider == "pterodactyl":
+            panel_version = input("Pterodactyl API version (1.x / 2.x / auto) [auto]: ").strip().lower() or "auto"
+            if panel_version not in {"1", "1.x", "2", "2.x", "auto"}:
+                print("Enter 1.x, 2.x, or auto.")
+                return 2
+            record["panel_version"] = "1.x" if panel_version in {"1", "1.x"} else "2.x" if panel_version in {"2", "2.x"} else "auto"
+            record["client_api_key"] = getpass.getpass("Client API key (required for server actions): ").strip()
+            record["application_api_key"] = getpass.getpass("Application API key (optional for panel-wide endpoints): ").strip()
+            if record["panel_version"] != "1.x":
+                record["admin_api_key"] = getpass.getpass("Root-admin Client API key (optional, Pterodactyl 2.x): ").strip()
+            else:
+                record["admin_api_key"] = ""
+            if not (record["client_api_key"] or record["application_api_key"]):
+                print("Configure at least a Client or Application API key.")
+                return 2
+        elif provider == "pelican":
+            record["client_api_key"] = getpass.getpass("Client API key (required for server actions): ").strip()
+            record["application_api_key"] = getpass.getpass("Application API key (optional for panel-wide endpoints): ").strip()
+            if not (record["client_api_key"] or record["application_api_key"]):
+                print("Configure at least a Client or Application API key.")
+                return 2
+        elif provider == "mcsmanager":
+            record["api_key"] = getpass.getpass("MCSManager API key (hidden input): ").strip()
+            version = input("MCSManager version [10.x]: ").strip() or "10.x"
+            if version not in {"9", "9.x", "10", "10.x"}:
+                print("Enter 9.x or 10.x.")
+                return 2
+            record["panel_version"] = "9.x" if version in {"9", "9.x"} else "10.x"
+            record["api_base_path"] = "/api"
+            record["auth_type"] = "query"
+            record["auth_query_param"] = "apikey"
+            if not record["api_key"]:
+                print("MCSManager requires an API key for the native API.")
+                return 2
+        elif provider == "amp":
+            record["api_base_path"] = input("AMP API base path [/API]: ").strip() or "/API"
+            record["auth_type"] = "amp_session"
+            record["auth_username"] = input("AMP username (create a least-privilege service account): ").strip()
+            record["auth_password"] = getpass.getpass("AMP password (hidden input): ")
+            record["amp_totp_token"] = getpass.getpass("AMP 2FA token (blank if not required; hidden input): ").strip()
+            if not record["auth_username"] or not record["auth_password"]:
+                print("AMP needs a username and password for its session API.")
+                return 2
+        elif provider == "pufferpanel":
+            record["api_base_path"] = input("PufferPanel API base path [/api]: ").strip() or "/api"
+            oauth_id = input("OAuth client ID (blank to use a direct access token): ").strip()
+            oauth_secret = getpass.getpass("OAuth client secret (hidden; blank for direct token): ").strip() if oauth_id else ""
+            if oauth_id and oauth_secret:
+                record["oauth_client_id"] = oauth_id
+                record["oauth_client_secret"] = oauth_secret
+                record["auth_type"] = "oauth2_client_credentials"
+                record["oauth_token_path"] = "/oauth2/token"
+            else:
+                record["api_key"] = getpass.getpass("Bearer access token (hidden; expires and must be rotated): ").strip()
+                record["auth_type"] = "bearer"
+                if not record["api_key"]:
+                    print("Configure OAuth client credentials or a bearer access token.")
+                    return 2
+        else:
+            default_path = "/api/v2" if provider == "crafty" else "/api" if provider == "calagopus" else "/API" if provider == "amp" else ""
+            record["api_base_path"] = input(f"Native API base path [{default_path or '/'}]: ").strip() or default_path
+            print("Authentication style: bearer / header / query / basic / none / oauth2_client_credentials")
+            auth_type = input("Auth style [bearer]: ").strip().lower() or "bearer"
+            if auth_type not in {"bearer", "header", "query", "basic", "none"}:
+                print("Unsupported auth style.")
+                return 2
+            record["auth_type"] = auth_type
+            if auth_type == "basic":
+                record["auth_username"] = input("HTTP Basic auth username: ").strip()
+                record["auth_password"] = getpass.getpass("HTTP Basic auth password (hidden input): ")
+                if not record["auth_username"] or not record["auth_password"]:
+                    print("Basic auth requires a username and password.")
+                    return 2
+            elif auth_type != "none":
+                record["api_key"] = getpass.getpass("API key/token (hidden input): ").strip()
+                if not record["api_key"]:
+                    print("An API key/token is required for that auth style.")
+                    return 2
+            if auth_type == "header":
+                record["auth_header"] = input("HTTP auth header [X-API-Key]: ").strip() or "X-API-Key"
+                record["auth_scheme"] = input("Auth scheme/prefix (blank for raw key) []: ").strip()
+            elif auth_type == "query":
+                record["auth_query_param"] = input("Query parameter name [api_key]: ").strip() or "api_key"
+            elif auth_type == "bearer":
+                record["auth_header"] = "Authorization"
+                record["auth_scheme"] = "Bearer"
 
+        panels.append(record)
     previous_hosts = existing.get("MAP_TRUSTED_WINGS_HOSTS", "")
     prompt = "Exact Wings/node HTTPS hostnames for binary transfers, comma-separated"
     if previous_hosts:
@@ -111,7 +223,10 @@ def main() -> int:
     settings = {
         "MAP_HOST": host,
         "MAP_PORT": existing.get("MAP_PORT", "8765"),
+        "MAP_SERVER_NAME": existing.get("MAP_SERVER_NAME", "Model Access Panel (MAP)"),
         "MAP_MAX_RESPONSE_CHARS": existing.get("MAP_MAX_RESPONSE_CHARS", "200000"),
+        "MAP_MAX_REQUEST_BODY_BYTES": existing.get("MAP_MAX_REQUEST_BODY_BYTES", "2000000"),
+        "MAP_MAX_RESPONSE_BYTES": existing.get("MAP_MAX_RESPONSE_BYTES", "5000000"),
         "MAP_MAX_INLINE_FILE_BYTES": existing.get("MAP_MAX_INLINE_FILE_BYTES", "6000000"),
         "MAP_LOG_LEVEL": existing.get("MAP_LOG_LEVEL", "info"),
         "MAP_TRUSTED_WINGS_HOSTS": trusted_hosts,
