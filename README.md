@@ -1,47 +1,113 @@
 # Model Access Panel (MAP)
 
-**RealmsNetwork/MAP** is a self-hosted Model Context Protocol (MCP) gateway for authorized Pterodactyl administration. Deploy it on the RealmsNetwork EU Debian VPS. API credentials stay in the server-side environment.
+<p align="center">
+  <strong>One MCP gateway. Multiple Pterodactyl panels. Broad API control.</strong><br>
+  A self-hosted, open-source administration gateway from RealmsNetwork.
+</p>
 
-## Scope
+<p align="center">
+  <a href="https://github.com/RealmsNetwork/MAP/actions/workflows/ci.yml"><img src="https://github.com/RealmsNetwork/MAP/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue.svg" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/MCP-Streamable%20HTTP%20%7C%20stdio-8b5cf6.svg" alt="MCP transports">
+</p>
 
-MAP exposes a generic `panel_api_request` tool for the Client, Application, and Admin API namespaces. It supports GET, POST, PUT, PATCH, and DELETE against a configured panel, with JSON or raw-text bodies. This exposes the available API surface without requiring a new MCP tool for every endpoint.
+MAP is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io/) server for administering one or many [Pterodactyl](https://pterodactyl.io/) panels from MCP-compatible clients. Configure each host once, choose it by ID in a tool call, and use dedicated server tools or the generic API gateway.
 
-Dedicated tools cover panel discovery/status, server listing and resource usage, power actions, console commands, text file read/write, binary file upload/download (base64), directory creation, file deletion/renaming, and backups. For other operations, use `panel_api_request` and the API documentation for the installed Pterodactyl version.
+**Heads up:** MAP is an administrative integration, not a read-only dashboard. Depending on configured API keys and panel permissions, it can stop servers, execute console commands, alter files, delete backups, and call destructive panel-wide endpoints. Only install it for systems you administer.
 
-This lets authorized callers access API features such as schedules, databases, allocations, startup variables, subusers, backup operations, server configuration, and panel-wide administration when those endpoints and credentials support them.
+## Features
 
-## API credentials
+- **Multiple panels/hosts:** distinct IDs, labels, HTTPS origins, and credentials.
+- **Broad API access:** generic Client, Application, and Admin request tool supporting GET, POST, PUT, PATCH, and DELETE.
+- **Server operations:** list servers, inspect resources, start/stop/restart/kill, and send console commands.
+- **Files and backups:** browse/read/write, create directories, rename/delete files, manage backups, and transfer bounded binary files through trusted Wings hosts.
+- **Two MCP transports:** Streamable HTTP for hosted deployments and stdio for local MCP clients.
+- **Deployment options:** Docker, systemd, and interactive panel configuration.
+- **Maintainer automation:** Python test matrix, static checks, package build, secret scanning, CodeQL, dependency updates, and issue templates.
 
-- Configure multiple panels through `MAP_PANELS_JSON`, or configure one panel using the `PANEL_*` variables.
-- Each record may have a Client API key, Application API key, and/or root-admin Client API key for the Admin namespace.
-- Pterodactyl versions differ in which token types each namespace accepts. MAP reports available token types without returning their values.
-- Use a root-administrator Client API token only when broad administrative access is genuinely required. The tool can perform destructive API calls when the configured token permits them.
-
-## File transfers
-
-MAP uses the panel API to request signed Wings URLs for binary uploads and downloads. Signed URLs are not returned to the caller. For this to work, list the exact HTTPS node hostnames returned by the panel in `MAP_TRUSTED_WINGS_HOSTS`, separated by commas. The panel hostname is trusted automatically. Inline binary transfers are capped by `MAP_MAX_INLINE_FILE_BYTES` (6,000,000 bytes by default).
-
-## Transport and security
-
-- MAP binds to `127.0.0.1` by default. It refuses non-loopback binding unless `MAP_MCP_BEARER_TOKEN` is configured.
-- The static bearer guard requires a token of at least 32 characters. For Internet access, put TLS and appropriate ingress controls in front of MAP; don't expose plaintext HTTP publicly.
-- Requests can only target a configured panel's HTTPS URL. Absolute URLs, redirects, and path traversal are rejected.
-- Common credential fields are redacted from JSON API responses. API response sizes are capped.
-- TLS fingerprint impersonation supports compatible network paths; it does not bypass authentication, Cloudflare Access, or WAF policies.
-- Pterodactyl panel access is not the same thing as SSH/root access to the EU VPS or Wings nodes. Host-level shell administration would require separate credentials and a separate tool integration.
-
-## Install and run
+## Quick start
 
 Requires Python 3.11+.
 
 ```bash
-python3 -m venv .venv
+git clone https://github.com/RealmsNetwork/MAP.git
+cd MAP
+python -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e '.[test]'
+python -m pip install -e '.[dev]'
 cp .env.example .env
-# Configure the real panel URL and appropriate API keys.
-python -m map_server.server
 ```
 
-For systemd deployment, use the supplied `deploy/realmsnetwork-map.service` and store secrets outside the repository in `/etc/realmsnetwork-map/map.env` with restrictive ownership and permissions. Do not add real environment files to Git.
+Edit `.env` with your authorized panels and keys. Never commit the file or paste production credentials into issues/prompts.
+
+Run the local HTTP MCP endpoint:
+
+```bash
+map-server --transport http
+```
+
+Default endpoint: `http://127.0.0.1:8765/mcp`. For local MCP clients that launch subprocesses, use `map-server --transport stdio`.
+
+## Multiple hosts
+
+Set `MAP_PANELS_JSON` to a JSON array. Each panel uses a unique `id`; pass that value as `panel_id` to MAP tools.
+
+```json
+[
+  {
+    "id": "realms-us",
+    "name": "RealmsNetwork US",
+    "base_url": "https://panel-us.example.net",
+    "client_api_key": "REPLACE_WITH_CLIENT_API_KEY",
+    "application_api_key": "REPLACE_WITH_APPLICATION_API_KEY",
+    "admin_api_key": "REPLACE_WITH_ROOT_ADMIN_CLIENT_API_KEY"
+  },
+  {
+    "id": "realms-eu",
+    "name": "RealmsNetwork Europe",
+    "base_url": "https://panel-eu.example.net",
+    "client_api_key": "REPLACE_WITH_CLIENT_API_KEY",
+    "application_api_key": "",
+    "admin_api_key": ""
+  }
+]
+```
+
+These are placeholders, not working credentials. Each host has its own base URL and keys. MAP will not reuse keys from another configured panel. For production, use the interactive configurator or a secret store. See [Configuration](docs/configuration.md).
+
+## Deployment and security
+
+MAP binds to loopback by default. Never expose plaintext HTTP directly to the Internet. For remote access, use HTTPS termination, a strong random bearer token, firewall restrictions, and any additional access control required by your environment. Docker Compose binds to host loopback and requires a bearer token.
+
+MAP is **not** an SSH server and does not grant root access to its host or Wings nodes. Its authority is limited to configured Pterodactyl API credentials and permissions.
+
+- [Security model](docs/security.md)
+- [Docker and systemd deployment](docs/deployment.md)
+- [Tool reference](docs/tools.md)
+- [Architecture](docs/architecture.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security reporting](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Project wiki](https://github.com/RealmsNetwork/MAP/wiki)
+
+## API compatibility
+
+Pterodactyl 1.x documents Client and Application APIs. Pterodactyl 2.x documents Client, Application, and Admin APIs, with different key requirements. MAP does not invent missing endpoints: consult docs for your installed panel version and use supported namespaces. See official [1.x API docs](https://docs.pterodactyl.io/v1/api) and [2.x API docs](https://docs.pterodactyl.io/v2/api).
+
+## Development
+
+```bash
+python -m pip install -e '.[dev]'
+ruff check src tests deploy
+pytest -q
+python -m build
+```
+
+Please report bugs with sanitized reproduction steps. Never include API keys, signed transfer URLs, private panel addresses, or production logs.
+
+## Design references
+
+MAP's implementation is original. Maintainers reviewed public MCP-server conventions and Pterodactyl API guidance for ideas such as concise setup instructions, clear developer workflows, and private security reporting. We did not transplant another project's source files. See [PixlFlip-Enterprises/PterodactylMCP](https://github.com/PixlFlip-Enterprises/PterodactylMCP) and [GitHub's official MCP Server](https://github.com/github/github-mcp-server) as independent reference projects.

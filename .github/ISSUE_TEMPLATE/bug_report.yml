@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem in MAP.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys, bearer tokens, signed Wings URLs, private panel URLs, or unredacted production logs."
+  - type: input
+    id: version
+    attributes:
+      label: MAP version or commit
+      placeholder: "0.3.0 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - Streamable HTTP
+        - stdio
+        - Docker
+        - systemd
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include sanitized errors and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use dummy hosts and credentials only.
+    validations:
+      required: true

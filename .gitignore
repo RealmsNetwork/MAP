@@ -8,5 +8,15 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
+htmlcov/
 dist/
 build/
+*.egg-info/
+.DS_Store
+.idea/
+.vscode/
+.vim/
+*.swp
+*.swo
+*.log

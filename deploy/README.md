@@ -1,28 +1,44 @@
-# Systemd deployment for the EU Debian VPS
+# Linux systemd deployment
 
-The service runs under the dedicated unprivileged account mapmcp. It does not run as VPS root.
+The example targets Debian/Ubuntu and does not expose MAP publicly or grant OS-root access.
 
-The service definition is deploy/realmsnetwork-map.service and the sysuser definition is deploy/realmsnetwork-map.sysusers.
+## Install
 
-## Configure panel keys without sharing them in chat
+Create an unprivileged account (such as `mapmcp`), clone the repo into `/opt/realmsnetwork-map`, and install Python 3.11+.
 
-After updating the checkout, run the sysuser helper (as root):
+```bash
+cd /opt/realmsnetwork-map
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install .
+```
 
-    systemd-sysusers /opt/realmsnetwork-map/deploy/realmsnetwork-map.sysusers
+## Unit setup
 
-Install/reload the unit, then run the local interactive configuration helper:
+```bash
+install -o root -g root -m 0644 deploy/realmsnetwork-map.service /etc/systemd/system/realmsnetwork-map.service
+install -d -o root -g mapmcp -m 0750 /etc/realmsnetwork-map
+systemctl daemon-reload
+systemctl enable --now realmsnetwork-map.service
+```
 
-    systemctl daemon-reload
-    /opt/realmsnetwork-map/.venv/bin/python /opt/realmsnetwork-map/deploy/configure_panels.py
+The unit expects `/etc/realmsnetwork-map/map.env`, owned by root with group `mapmcp` and mode `0640`. Do not store secrets in the unit file.
 
-The helper uses hidden input for API keys, writes a root-owned environment file at /etc/realmsnetwork-map/map.env, and restarts MAP. It never prints API keys. Configure a Client API key for server-level power/files, an Application API key where needed, and a root-admin Client API key for the modern Admin API namespace.
+## Configure panels
 
-The helper can configure up to 20 panels. It writes a base64-encoded JSON environment variable so special characters in panel credentials do not break systemd EnvironmentFile parsing.
+Run the interactive helper as root; keys are entered with hidden input:
 
-For binary file upload/download, enter exact trusted Wings/node hostnames. Only panel URL hostnames and the configured trusted hostnames are contacted by the file-transfer tools.
+```bash
+/opt/realmsnetwork-map/.venv/bin/python /opt/realmsnetwork-map/deploy/configure_panels.py
+```
 
-Keep the env file group-readable only by mapmcp (root:mapmcp, mode 0640) and its directory root:mapmcp mode 0750.
+The helper stores panel JSON as base64. Base64 is not encryption, so filesystem permissions remain essential. Add exact Wings/node hostnames for binary transfers.
 
-## External MCP access
+## Verify and upgrade
 
-MAP binds to 127.0.0.1 by default. For remote clients, put TLS and authentication-aware ingress in front of the local port. If binding MAP directly to a non-loopback address, set a long random MAP_MCP_BEARER_TOKEN (at least 32 characters) first; don't expose plaintext HTTP publicly.
+```bash
+systemctl status realmsnetwork-map.service
+journalctl -u realmsnetwork-map.service -n 100 --no-pager
+```
+
+The listener defaults to `127.0.0.1:8765` with MCP path `/mcp`. For remote bind, set a random bearer token and use HTTPS ingress. During upgrades, back up the env file and never replace it with `.env.example`.
