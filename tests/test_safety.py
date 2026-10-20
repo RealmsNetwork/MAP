@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from map_server import server
+from map_server import client, server
 
 
 def configured_panel(monkeypatch):
@@ -117,3 +117,61 @@ def test_admin_methods_and_full_access_tools_are_available():
         "server_create_backup", "server_delete_backup",
     ):
         assert hasattr(server, name)
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, body=b'{"status":"running"}', headers=None, chunk_size=3):
+        self.status_code = status_code
+        self.body = body
+        self.headers = headers or {"content-type": "application/json"}
+        self.chunk_size = chunk_size
+        self.closed = False
+
+    def iter_content(self, chunk_size=65536):
+        for offset in range(0, len(self.body), min(chunk_size, self.chunk_size)):
+            yield self.body[offset:offset + min(chunk_size, self.chunk_size)]
+
+    def close(self):
+        self.closed = True
+
+
+def test_api_request_routes_to_selected_panel_and_redacts(monkeypatch):
+    configured_panel(monkeypatch)
+    calls = []
+    response = FakeResponse(body=b'{"status":"running","token":"leaked-secret"}')
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return response
+
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    result = client._api_request("bp", "client", "GET", "servers/abc/resources")
+
+    assert result["ok"] is True
+    assert result["data"]["status"] == "running"
+    assert result["data"]["token"] == "[REDACTED]"
+    assert calls[0][1] == "https://panel.example.test/api/client/servers/abc/resources"
+    assert calls[0][2]["headers"]["Authorization"] == "Bearer client-secret-value"
+    assert calls[0][2]["allow_redirects"] is False
+    assert calls[0][2]["stream"] is True
+    assert response.closed is True
+
+
+def test_api_request_rejects_oversized_json_body(monkeypatch):
+    configured_panel(monkeypatch)
+    monkeypatch.setattr(client, "MAX_REQUEST_BODY_BYTES", 32)
+    with pytest.raises(ValueError, match="MAP_MAX_REQUEST_BODY_BYTES"):
+        client._api_request("bp", "client", "POST", "servers/abc/command", json_body={"command": "x" * 200})
+
+
+def test_api_request_caps_streamed_response(monkeypatch):
+    configured_panel(monkeypatch)
+    monkeypatch.setattr(client, "MAX_RESPONSE_BYTES", 8)
+    response = FakeResponse(body=b'{"message":"this response is too long"}')
+
+    monkeypatch.setattr(client.requests, "request", lambda *args, **kwargs: response)
+    result = client._api_request("bp", "client", "GET", "servers")
+
+    assert result["ok"] is False
+    assert result["status_code"] == 413
+    assert "MAP_MAX_RESPONSE_BYTES" in result["error"]
+    assert response.closed is True

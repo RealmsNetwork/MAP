@@ -16,6 +16,7 @@ from .config import (
     HOST,
     IMPERSONATE,
     MAX_INLINE_FILE_BYTES,
+    MAP_SERVER_NAME,
     MCP_BEARER_TOKEN,
     PORT,
     SERVER_ID_RE,
@@ -28,7 +29,7 @@ from .config import (
 from .security import BearerGuard
 
 
-mcp = FastMCP("Model Access Panel (MAP)", host=HOST, port=PORT)
+mcp = FastMCP(MAP_SERVER_NAME, host=HOST, port=PORT)
 
 
 @mcp.tool()

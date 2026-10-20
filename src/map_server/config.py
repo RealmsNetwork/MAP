@@ -15,8 +15,11 @@ load_dotenv()
 HOST = os.getenv("MAP_HOST", "127.0.0.1").strip()
 PORT = int(os.getenv("MAP_PORT", "8765"))
 MCP_BEARER_TOKEN = os.getenv("MAP_MCP_BEARER_TOKEN", "").strip()
+MAP_SERVER_NAME = os.getenv("MAP_SERVER_NAME", "Model Access Panel (MAP)").strip() or "Model Access Panel (MAP)"
 IMPERSONATE = os.getenv("CURL_CFFI_IMPERSONATE", "chrome").strip() or "chrome"
 MAX_RESPONSE_CHARS = int(os.getenv("MAP_MAX_RESPONSE_CHARS", "200000"))
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MAP_MAX_REQUEST_BODY_BYTES", "2000000"))
+MAX_RESPONSE_BYTES = int(os.getenv("MAP_MAX_RESPONSE_BYTES", "5000000"))
 MAX_INLINE_FILE_BYTES = int(os.getenv("MAP_MAX_INLINE_FILE_BYTES", "6000000"))
 PANEL_IDS_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 SERVER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")

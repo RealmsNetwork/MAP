@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunsplit
@@ -10,6 +11,8 @@ from curl_cffi import requests
 
 from .config import (
     IMPERSONATE,
+    MAX_REQUEST_BODY_BYTES,
+    MAX_RESPONSE_BYTES,
     MAX_RESPONSE_CHARS,
     MCP_BEARER_TOKEN,
     SERVER_ID_RE,
@@ -94,6 +97,33 @@ def _api_request(
         raise ValueError("path cannot contain traversal segments.")
     if len(relative) > 2048:
         raise ValueError("path is too long.")
+
+    if query_params is not None:
+        if not isinstance(query_params, dict):
+            raise ValueError("query_params must be an object.")
+        try:
+            query_size = len(json.dumps(query_params, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError):
+            raise ValueError("query_params must be JSON-serializable.") from None
+        if query_size > 65536:
+            raise ValueError("query_params exceeds the 64 KB input limit.")
+
+    encoded_json: bytes | None = None
+    raw_bytes: bytes | None = None
+    if json_body is not None:
+        try:
+            encoded_json = json.dumps(
+                json_body, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            raise ValueError("json_body must be valid JSON data.") from None
+        if len(encoded_json) > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body exceeds MAP_MAX_REQUEST_BODY_BYTES ({MAX_REQUEST_BODY_BYTES} bytes).")
+    elif raw_body is not None:
+        raw_bytes = raw_body.encode("utf-8")
+        if len(raw_bytes) > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body exceeds MAP_MAX_REQUEST_BODY_BYTES ({MAX_REQUEST_BODY_BYTES} bytes).")
+
     token = _token_for(panel, api)
     url = f"{panel['base_url']}/api/{api}" + (f"/{relative}" if relative else "")
     headers = {
@@ -106,37 +136,76 @@ def _api_request(
         "impersonate": IMPERSONATE,
         "timeout": max(1, min(int(timeout_seconds), 120)),
         "allow_redirects": False,
+        "stream": True,
     }
-    if json_body is not None:
-        kwargs["json"] = json_body
+    if encoded_json is not None:
+        kwargs["data"] = encoded_json
         headers["Content-Type"] = "application/json"
-    elif raw_body is not None:
-        kwargs["data"] = raw_body.encode("utf-8")
+    elif raw_bytes is not None:
+        kwargs["data"] = raw_bytes
         headers["Content-Type"] = content_type or "text/plain; charset=utf-8"
     elif content_type:
         headers["Content-Type"] = content_type
+
     try:
         response = requests.request(method, url, **kwargs)
     except Exception as exc:
         raise RuntimeError(
             f"Panel API transport failed ({type(exc).__name__}). Check DNS, TLS, and panel connectivity."
         ) from None
-    if 300 <= response.status_code < 400:
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": "Panel redirected the request; redirect following is disabled to protect API credentials.",
-        }
-    response_type = response.headers.get("content-type", "")
-    if not response.content:
+
+    try:
+        if 300 <= response.status_code < 400:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "error": "Panel redirected the request; redirect following is disabled to protect API credentials.",
+            }
+
+        response_type = response.headers.get("content-type", "")
+        length = response.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
+            return {
+                "ok": False,
+                "status_code": 413,
+                "method": method,
+                "api": api,
+                "path": "/" + relative,
+                "error": f"Panel API response exceeds MAP_MAX_RESPONSE_BYTES ({MAX_RESPONSE_BYTES} bytes).",
+            }
+
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_RESPONSE_BYTES:
+                    return {
+                        "ok": False,
+                        "status_code": 413,
+                        "method": method,
+                        "api": api,
+                        "path": "/" + relative,
+                        "error": f"Panel API response exceeds MAP_MAX_RESPONSE_BYTES ({MAX_RESPONSE_BYTES} bytes).",
+                    }
+                chunks.append(chunk)
+        except Exception as exc:
+            raise RuntimeError(f"Panel API response read failed ({type(exc).__name__}).") from None
+    finally:
+        response.close()
+
+    body = b"".join(chunks)
+    if not body:
         data: Any = None
     elif "json" in response_type.lower():
         try:
-            data = _safe_json(response.json())
-        except ValueError:
+            data = _safe_json(json.loads(body))
+        except (ValueError, UnicodeDecodeError):
             data = "[Panel returned invalid JSON]"
     elif "text/" in response_type.lower() or "xml" in response_type.lower():
-        text_value = response.text
+        text_value = body.decode("utf-8", errors="replace")
         for secret in (token, MCP_BEARER_TOKEN):
             if secret:
                 text_value = text_value.replace(secret, "[REDACTED]")
@@ -144,9 +213,10 @@ def _api_request(
     else:
         data = {
             "content_type": response_type or "unknown",
-            "byte_length": len(response.content),
+            "byte_length": len(body),
             "note": "Binary response omitted. Use a purpose-built file transfer tool for downloads.",
         }
+
     return {
         "ok": 200 <= response.status_code < 300,
         "status_code": response.status_code,

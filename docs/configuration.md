@@ -37,11 +37,14 @@ Pterodactyl 1.x documents Client and Application APIs. Pterodactyl 2.x documents
 | `PANEL_APPLICATION_API_KEY` | empty | Legacy Application key. |
 | `PANEL_ADMIN_API_KEY` | empty | Legacy root-admin Client key. |
 | `MAP_TRANSPORT` | `http` | CLI transport: `http` or `stdio`. |
+| `MAP_SERVER_NAME` | `Model Access Panel (MAP)` | MCP server display name for client lists. |
 | `MAP_HOST` | `127.0.0.1` | HTTP bind host. Non-loopback needs a strong bearer token. |
 | `MAP_PORT` | `8765` | HTTP port. |
 | `MAP_MCP_BEARER_TOKEN` | empty | Static HTTP bearer guard, minimum 32 characters. |
 | `MAP_TRUSTED_WINGS_HOSTS` | empty | Exact comma-separated HTTPS hostnames allowed for signed Wings URLs. |
 | `MAP_MAX_RESPONSE_CHARS` | `200000` | Maximum returned string length. |
+| `MAP_MAX_REQUEST_BODY_BYTES` | `2000000` | Maximum generic API request body size. |
+| `MAP_MAX_RESPONSE_BYTES` | `5000000` | Maximum total API response body size before parsing. |
 | `MAP_MAX_INLINE_FILE_BYTES` | `6000000` | Inline base64 file transfer cap in bytes. |
 | `CURL_CFFI_IMPERSONATE` | `chrome` | curl-cffi fingerprint profile; not an authentication bypass. |
 | `MAP_LOG_LEVEL` | `info` | Uvicorn log level. |

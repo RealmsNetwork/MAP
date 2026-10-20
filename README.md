@@ -23,6 +23,7 @@ MAP is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io/) 
 - **Server operations:** list servers, inspect resources, start/stop/restart/kill, and send console commands.
 - **Files and backups:** browse/read/write, create directories, rename/delete files, manage backups, and transfer bounded binary files through trusted Wings hosts.
 - **Two MCP transports:** Streamable HTTP for hosted deployments and stdio for local MCP clients.
+- **Customization:** configure the MCP display name, request/response limits, panel routing, timeout, and trusted Wings hosts.
 - **Deployment options:** Docker, systemd, and interactive panel configuration.
 - **Maintainer automation:** Python test matrix, static checks, package build, secret scanning, CodeQL, dependency updates, and issue templates.
 
