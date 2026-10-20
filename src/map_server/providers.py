@@ -65,8 +65,17 @@ def normalize_api_base_path(panel: dict[str, Any], provider: str) -> str:
     raw = str(panel.get("api_base_path", DEFAULT_API_BASE_PATH[provider]) or "").strip()
     if not raw:
         return ""
-    if any(char.isspace() for char in raw) or "?" in raw or "#" in raw or "://" in raw or "\\" in raw:
-        raise RuntimeError(f"Panel '{panel.get('id', '?')}' api_base_path must be a relative URL path.")
+    if (
+        any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in raw)
+        or "?" in raw
+        or "#" in raw
+        or "%" in raw
+        or "://" in raw
+        or "\\" in raw
+    ):
+        raise RuntimeError(
+            f"Panel '{panel.get('id', '?')}' api_base_path must be a relative URL path without encoded characters."
+        )
     parts = raw.strip("/").split("/")
     if any(part in {".", ".."} for part in parts):
         raise RuntimeError(f"Panel '{panel.get('id', '?')}' api_base_path cannot contain traversal segments.")

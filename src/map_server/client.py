@@ -33,13 +33,19 @@ SENSITIVE_KEYS = (
     "authorization", "password", "secret", "api_key", "apikey", "access_token",
     "refresh_token", "private_key", "client_secret", "bearer", "cookie", "token", "signature",
     "credential", "session_id", "sessionid", "x_amz_security_token",
+    "access_key", "auth_key", "api_secret", "jwt",
 )
 
 
 
 def _redact_url(value: str) -> str:
     """Redact credentials in URLs, including URLs embedded in text responses."""
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        # A malformed URL should not turn a harmless upstream response into a tool failure.
+        # Known configured secrets are redacted before this function is called.
+        return value
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return value
     query = parse_qsl(parsed.query, keep_blank_values=True)
@@ -410,6 +416,16 @@ def _api_request(
             headers[str(name)] = str(value)
 
     token = _apply_panel_auth(panel, api_kind, headers, params)
+    # Query-based authentication appends its secret only during auth application, so enforce
+    # the limit again after that token has been included.
+    try:
+        authenticated_query_size = len(
+            json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        raise ValueError("query_params must be JSON-serializable.") from None
+    if authenticated_query_size > 65536:
+        raise ValueError("query_params including authentication exceeds the 64 KB input limit.")
     if encoded_json is not None:
         headers["Content-Type"] = "application/json"
     elif raw_bytes is not None:
@@ -514,6 +530,16 @@ def _api_request(
 def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
+    if operation not in {"upload", "download"}:
+        raise ValueError("operation must be upload or download.")
+    if not isinstance(query, dict):
+        raise ValueError("File-transfer query must be an object.")
+    try:
+        query_size = len(json.dumps(query, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        raise ValueError("File-transfer query must be JSON-serializable.") from None
+    if query_size > 65536:
+        raise ValueError("File-transfer query exceeds the 64 KB input limit.")
     panel = _panel(panel_id)
     if normalize_provider(panel.get("provider")) not in PTERODACTYL_COMPATIBLE:
         raise ValueError(

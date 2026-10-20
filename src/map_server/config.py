@@ -132,6 +132,8 @@ def _read_panels() -> dict[str, dict[str, Any]]:
             if not re.fullmatch(r"[!#$%&'*+.^_|~0-9A-Za-z-]{1,128}", auth_header):
                 raise RuntimeError(f"Panel '{panel_id}' auth_header is not a valid HTTP header name.")
             auth_scheme = str(entry.get("auth_scheme", "Bearer" if auth_type == "bearer" else "")).strip()
+            if len(auth_scheme) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in auth_scheme):
+                raise RuntimeError(f"Panel '{panel_id}' auth_scheme cannot contain control characters and must be at most 128 characters.")
             auth_query_param = str(entry.get("auth_query_param") or ("apikey" if provider == "mcsmanager" else "api_key")).strip()
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", auth_query_param):
                 raise RuntimeError(f"Panel '{panel_id}' auth_query_param contains unsupported characters.")
@@ -157,6 +159,8 @@ def _read_panels() -> dict[str, dict[str, Any]]:
                 or any(char.isspace() for char in oauth_token_path)
                 or "?" in oauth_token_path
                 or "#" in oauth_token_path
+                or "%" in oauth_token_path
+                or any(ord(char) < 32 or ord(char) == 127 for char in oauth_token_path)
                 or "://" in oauth_token_path
                 or "\\" in oauth_token_path
                 or any(part in {".", ".."} for part in oauth_token_path.strip("/").split("/"))

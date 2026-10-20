@@ -770,3 +770,105 @@ def test_oauth_token_with_60_second_lifetime_is_cached_until_refresh_window(monk
     assert first == "short-lived-token"
     assert second == first
     assert len(calls) == 1
+
+
+def test_redaction_handles_malformed_url_in_upstream_text(monkeypatch):
+    configured_panel(monkeypatch)
+    result = client._safe_json({"message": "bad URL https://[broken and access_key=known-secret"})
+    assert "bad URL" in result["message"]
+    assert "https://[broken" in result["message"]
+
+
+@pytest.mark.parametrize("api_base_path", ["/api/%2e%2e/internal", "/api/../internal", "/api/\x01bad"])
+def test_api_base_path_rejects_encoded_or_control_path_segments(monkeypatch, api_base_path):
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([{
+            "id": "custom",
+            "provider": "generic_rest",
+            "base_url": "https://api.example.test",
+            "api_base_path": api_base_path,
+            "auth_type": "none",
+        }]),
+    )
+    with pytest.raises(RuntimeError, match="api_base_path"):
+        server.list_panels()
+
+
+def test_query_auth_token_is_included_in_size_limit(monkeypatch):
+    configured_mcsmanager(monkeypatch)
+    called = []
+    monkeypatch.setattr(client.requests, "request", lambda *args, **kwargs: called.append(args))
+    with pytest.raises(ValueError, match="including authentication"):
+        client._api_request(
+            "mcsm", "native", "GET", "overview",
+            query_params={"x": "a" * 65510},
+        )
+    assert called == []
+
+
+def test_signed_wings_query_is_bounded(monkeypatch):
+    configured_panel(monkeypatch)
+    called = []
+    monkeypatch.setattr(client.requests, "get", lambda *args, **kwargs: called.append(args))
+    with pytest.raises(ValueError, match="64 KB"):
+        client._signed_wings_url("bp", "abc12345", "download", {"file": "x" * 65540})
+    assert called == []
+
+
+def test_file_upload_does_not_buffer_node_response(monkeypatch):
+    import base64
+
+    configured_panel(monkeypatch)
+    monkeypatch.setattr(server, "_signed_wings_url", lambda *args, **kwargs: ("https://node.example.test/upload?token=signed", None))
+    response = FakeResponse(status_code=201, body=b"x" * 100000)
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return response
+
+    monkeypatch.setattr(server.requests, "post", fake_post)
+    result = server.server_upload_file_base64("bp", "abc12345", "test.bin", base64.b64encode(b"hello").decode())
+
+    assert result["ok"] is True
+    assert result["status_code"] == 201
+    assert calls[0][1]["stream"] is True
+    assert response.closed is True
+
+
+def test_custom_access_key_header_and_response_values_are_redacted(monkeypatch):
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([{
+            "id": "custom",
+            "provider": "generic_rest",
+            "base_url": "https://api.example.test",
+            "auth_type": "none",
+            "custom_headers": {"X-Access-Key": "custom-access-secret"},
+        }]),
+    )
+    result = client._safe_json({
+        "access_key": "custom-access-secret",
+        "message": "server echoed custom-access-secret",
+        "url": "https://api.example.test/status?access_key=custom-access-secret&ok=1",
+    })
+    assert result["access_key"] == "[REDACTED]"
+    assert "custom-access-secret" not in json.dumps(result)
+    assert "ok=1" in result["url"]
+
+
+def test_auth_scheme_rejects_header_control_characters(monkeypatch):
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([{
+            "id": "custom",
+            "provider": "generic_rest",
+            "base_url": "https://api.example.test",
+            "api_key": "test-key",
+            "auth_type": "bearer",
+            "auth_scheme": "Bearer\r\nX-Injected: yes",
+        }]),
+    )
+    with pytest.raises(RuntimeError, match="auth_scheme"):
+        server.list_panels()
