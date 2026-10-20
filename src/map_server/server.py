@@ -1,253 +1,29 @@
-"""Model Access Panel (MAP): broad Pterodactyl Client, Application, and Admin API MCP gateway."""
+"""MCP tool registration and command-line entry point for Model Access Panel."""
 from __future__ import annotations
 
+import argparse
 import base64
-import hmac
-import ipaddress
-import json
 import os
-import re
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunsplit
+from urllib.parse import urlparse
 
 import uvicorn
-from curl_cffi import requests
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-load_dotenv()
-
-HOST = os.getenv("MAP_HOST", "127.0.0.1").strip()
-PORT = int(os.getenv("MAP_PORT", "8765"))
-MCP_BEARER_TOKEN = os.getenv("MAP_MCP_BEARER_TOKEN", "").strip()
-IMPERSONATE = os.getenv("CURL_CFFI_IMPERSONATE", "chrome").strip() or "chrome"
-MAX_RESPONSE_CHARS = int(os.getenv("MAP_MAX_RESPONSE_CHARS", "200000"))
-MAX_INLINE_FILE_BYTES = int(os.getenv("MAP_MAX_INLINE_FILE_BYTES", "6000000"))
-PANEL_IDS_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
-SERVER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
-SUPPORTED_APIS = {"client", "application", "admin"}
-SUPPORTED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-SENSITIVE_KEYS = ("authorization", "password", "secret", "api_key", "apikey", "access_token",
-                  "refresh_token", "private_key", "client_secret", "bearer", "cookie", "token", "signature")
-
-
-def _read_panels() -> dict[str, dict[str, str]]:
-    """Load panel URLs and API keys from server-side environment only."""
-    panels: dict[str, dict[str, str]] = {}
-    raw = os.getenv("MAP_PANELS_JSON", "").strip()
-    if not raw:
-        encoded = os.getenv("MAP_PANELS_JSON_B64", "").strip()
-        if encoded:
-            try:
-                raw = base64.b64decode(encoded, validate=True).decode("utf-8")
-            except Exception as exc:
-                raise RuntimeError("MAP_PANELS_JSON_B64 must be base64-encoded UTF-8 JSON.") from exc
-    if raw:
-        try:
-            entries = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("MAP_PANELS_JSON must be valid JSON.") from exc
-        if not isinstance(entries, list):
-            raise RuntimeError("MAP_PANELS_JSON must be a JSON array.")
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise RuntimeError("Each MAP_PANELS_JSON entry must be an object.")
-            panel_id = str(entry.get("id", "")).strip()
-            if not PANEL_IDS_RE.fullmatch(panel_id) or panel_id in panels:
-                raise RuntimeError("Panel IDs must be unique and use letters, numbers, underscores, or hyphens.")
-            panels[panel_id] = {
-                "id": panel_id,
-                "name": str(entry.get("name") or panel_id),
-                "base_url": str(entry.get("base_url") or "").strip().rstrip("/"),
-                "client_api_key": str(entry.get("client_api_key") or "").strip(),
-                "application_api_key": str(entry.get("application_api_key") or "").strip(),
-                "admin_api_key": str(entry.get("admin_api_key") or "").strip(),
-            }
-    else:
-        base_url = os.getenv("PANEL_BASE_URL", "").strip().rstrip("/")
-        if base_url:
-            panels["default"] = {
-                "id": "default",
-                "name": os.getenv("PANEL_NAME", "Default Pterodactyl Panel").strip(),
-                "base_url": base_url,
-                "client_api_key": os.getenv("PANEL_CLIENT_API_KEY", os.getenv("PANEL_API_KEY", "")).strip(),
-                "application_api_key": os.getenv("PANEL_APPLICATION_API_KEY", "").strip(),
-                "admin_api_key": os.getenv("PANEL_ADMIN_API_KEY", "").strip(),
-            }
-    return panels
-
-
-def _panels() -> dict[str, dict[str, str]]:
-    return _read_panels()
-
-
-def _panel(panel_id: str) -> dict[str, str]:
-    if not PANEL_IDS_RE.fullmatch(panel_id or ""):
-        raise ValueError("panel_id must be a configured panel ID.")
-    panel = _panels().get(panel_id)
-    if not panel:
-        raise ValueError(f"Panel ID '{panel_id}' is not configured. Use list_panels to inspect configured IDs.")
-    parsed = urlparse(panel["base_url"])
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise RuntimeError(f"Panel '{panel_id}' must have an HTTPS base_url without embedded credentials.")
-    if parsed.query or parsed.fragment:
-        raise RuntimeError(f"Panel '{panel_id}' base_url must not contain a query string or fragment.")
-    try:
-        address = ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        address = None
-    if address and (address.is_loopback or address.is_link_local or address.is_reserved):
-        raise RuntimeError(f"Panel '{panel_id}' uses a disallowed loopback, link-local, or reserved IP address.")
-    return panel
-
-
-def _token_for(panel: dict[str, str], api: str) -> str:
-    if api == "client":
-        token = panel.get("client_api_key", "")
-    elif api == "application":
-        token = panel.get("application_api_key", "") or panel.get("admin_api_key", "")
-    elif api == "admin":
-        token = panel.get("admin_api_key", "")
-    else:
-        raise ValueError("api must be client, application, or admin.")
-    if not token:
-        raise RuntimeError(
-            f"Panel '{panel['id']}' has no key configured for the {api} API. "
-            "Add the appropriate key to the server-side environment."
-        )
-    return token
-
-
-def _safe_json(value: Any) -> Any:
-    """Redact common credential fields while preserving useful API output."""
-    if isinstance(value, dict):
-        safe: dict[str, Any] = {}
-        for key, item in value.items():
-            lower = str(key).lower().replace("-", "_")
-            if any(secret_part in lower for secret_part in SENSITIVE_KEYS):
-                safe[key] = "[REDACTED]"
-            else:
-                safe[key] = _safe_json(item)
-        return safe
-    if isinstance(value, list):
-        return [_safe_json(item) for item in value]
-    if isinstance(value, str):
-        parsed_value = urlparse(value)
-        if parsed_value.scheme in {"http", "https"} and parsed_value.netloc and parsed_value.query:
-            query = parse_qsl(parsed_value.query, keep_blank_values=True)
-            if any(any(part in key.lower() for part in SENSITIVE_KEYS) for key, _ in query):
-                query = [(key, "[REDACTED]" if any(part in key.lower() for part in SENSITIVE_KEYS) else item) for key, item in query]
-                value = urlunsplit((parsed_value.scheme, parsed_value.netloc, parsed_value.path, urlencode(query), parsed_value.fragment))
-        for panel in _panels().values():
-            for key in ("client_api_key", "application_api_key", "admin_api_key"):
-                secret = panel.get(key, "")
-                if secret:
-                    value = value.replace(secret, "[REDACTED]")
-        return value[:MAX_RESPONSE_CHARS] + "…[truncated]" if len(value) > MAX_RESPONSE_CHARS else value
-    return value
-
-
-def _api_request(
-    panel_id: str,
-    api: str,
-    method: str,
-    path: str,
-    query_params: dict[str, Any] | None = None,
-    json_body: Any = None,
-    raw_body: str | None = None,
-    content_type: str | None = None,
-    timeout_seconds: int = 30,
-) -> dict[str, Any]:
-    panel = _panel(panel_id)
-    api = api.lower().strip()
-    if api not in SUPPORTED_APIS:
-        raise ValueError("api must be client, application, or admin.")
-    method = method.upper().strip()
-    if method not in SUPPORTED_METHODS:
-        raise ValueError("method must be GET, POST, PUT, PATCH, or DELETE.")
-    if json_body is not None and raw_body is not None:
-        raise ValueError("Pass json_body or raw_body, not both.")
-    if raw_body is not None and method in {"GET", "DELETE"}:
-        raise ValueError("raw_body is only supported for POST, PUT, and PATCH.")
-    if not isinstance(path, str):
-        raise ValueError("path must be a relative API path.")
-    input_path = path.strip()
-    if input_path.startswith("//"):
-        raise ValueError("Absolute network-path URLs are not allowed.")
-    relative = input_path.lstrip("/")
-    prefix = f"api/{api}"
-    if relative == prefix:
-        relative = ""
-    elif relative.startswith(prefix + "/"):
-        relative = relative[len(prefix) + 1:]
-    if "://" in relative or relative.startswith("//") or "?" in relative or "#" in relative or "%" in relative or "\\" in relative:
-        raise ValueError("path must be relative to the selected API namespace; pass query parameters separately.")
-    decoded = unquote(relative)
-    if any(segment in {".", ".."} for segment in decoded.split("/")) or "\\" in decoded:
-        raise ValueError("path cannot contain traversal segments.")
-    if len(relative) > 2048:
-        raise ValueError("path is too long.")
-    token = _token_for(panel, api)
-    url = f"{panel['base_url']}/api/{api}" + (f"/{relative}" if relative else "")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "Application/vnd.pterodactyl.v1+json",
-    }
-    kwargs: dict[str, Any] = {
-        "headers": headers,
-        "params": query_params or {},
-        "impersonate": IMPERSONATE,
-        "timeout": max(1, min(int(timeout_seconds), 120)),
-        "allow_redirects": False,
-    }
-    if json_body is not None:
-        kwargs["json"] = json_body
-        headers["Content-Type"] = "application/json"
-    elif raw_body is not None:
-        kwargs["data"] = raw_body.encode("utf-8")
-        headers["Content-Type"] = content_type or "text/plain; charset=utf-8"
-    elif content_type:
-        headers["Content-Type"] = content_type
-    try:
-        response = requests.request(method, url, **kwargs)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Panel API transport failed ({type(exc).__name__}). Check DNS, TLS, and panel connectivity."
-        ) from None
-    if 300 <= response.status_code < 400:
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": "Panel redirected the request; redirect following is disabled to protect API credentials.",
-        }
-    response_type = response.headers.get("content-type", "")
-    if not response.content:
-        data: Any = None
-    elif "json" in response_type.lower():
-        try:
-            data = _safe_json(response.json())
-        except ValueError:
-            data = "[Panel returned invalid JSON]"
-    elif "text/" in response_type.lower() or "xml" in response_type.lower():
-        text_value = response.text
-        for secret in (token, MCP_BEARER_TOKEN):
-            if secret:
-                text_value = text_value.replace(secret, "[REDACTED]")
-        data = text_value[:MAX_RESPONSE_CHARS] + "…[truncated]" if len(text_value) > MAX_RESPONSE_CHARS else text_value
-    else:
-        data = {
-            "content_type": response_type or "unknown",
-            "byte_length": len(response.content),
-            "note": "Binary response omitted. Use a purpose-built file transfer tool for downloads.",
-        }
-    return {
-        "ok": 200 <= response.status_code < 300,
-        "status_code": response.status_code,
-        "method": method,
-        "api": api,
-        "path": "/" + relative,
-        "data": data,
-    }
+from .client import _api_request, _safe_json, _signed_wings_url
+from .config import (
+    HOST,
+    MAX_INLINE_FILE_BYTES,
+    MCP_BEARER_TOKEN,
+    PORT,
+    SERVER_ID_RE,
+    SUPPORTED_APIS,
+    SUPPORTED_METHODS,
+    _panel,
+    _panels,
+    _token_for,
+)
+from .security import BearerGuard
 
 
 mcp = FastMCP("Model Access Panel (MAP)", host=HOST, port=PORT)
@@ -431,59 +207,6 @@ def server_delete_backup(panel_id: str, server_id: str, backup_id: str) -> dict[
     return _api_request(panel_id, "client", "DELETE", f"servers/{server_id}/backups/{backup_id}")
 
 
-
-def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    panel = _panel(panel_id)
-    token = _token_for(panel, "client")
-    try:
-        response = requests.get(
-            f"{panel['base_url']}/api/client/servers/{server_id}/files/{operation}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "Application/vnd.pterodactyl.v1+json"},
-            params=query,
-            impersonate=IMPERSONATE,
-            timeout=30,
-            allow_redirects=False,
-        )
-    except Exception as exc:
-        raise RuntimeError(f"Panel file-transfer request failed ({type(exc).__name__}).") from None
-    if 300 <= response.status_code < 400:
-        return None, {"ok": False, "status_code": response.status_code, "error": "Panel redirected the request; redirects are disabled."}
-    if response.status_code < 200 or response.status_code >= 300:
-        return None, {"ok": False, "status_code": response.status_code, "error": "Panel refused the file-transfer request."}
-    try:
-        payload = response.json()
-        url = payload.get("attributes", {}).get("url")
-    except (ValueError, AttributeError):
-        url = None
-    if not isinstance(url, str) or not url:
-        return None, {"ok": False, "status_code": response.status_code, "error": "Panel did not return a signed file-transfer URL."}
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        return None, {"ok": False, "status_code": response.status_code, "error": "The signed Wings URL is not an acceptable HTTPS URL."}
-    try:
-        address = ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        address = None
-    if address and (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved):
-        return None, {"ok": False, "status_code": response.status_code, "error": "The signed Wings URL points at a private or reserved IP."}
-    panel_host = urlparse(panel["base_url"]).hostname or ""
-    trusted_hosts = {panel_host.lower()}
-    trusted_hosts.update(
-        host.strip().lower()
-        for host in os.getenv("MAP_TRUSTED_WINGS_HOSTS", "").split(",")
-        if host.strip()
-    )
-    if parsed.hostname.lower() not in trusted_hosts:
-        return None, {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": f"Wings host '{parsed.hostname}' is not trusted. Add its exact hostname to MAP_TRUSTED_WINGS_HOSTS on the EU VPS.",
-        }
-    return url, None
-
-
 @mcp.tool()
 def server_upload_file_base64(
     panel_id: str,
@@ -591,40 +314,36 @@ def server_download_file_base64(
     }
 
 
-class BearerGuard:
-    """Static bearer-token guard for remote MCP transport."""
-
-    def __init__(self, app: Any, token: str):
-        self.app = app
-        self.token = token
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or not self.token:
-            await self.app(scope, receive, send)
-            return
-        provided = ""
-        for key, value in scope.get("headers", []):
-            if key.lower() == b"authorization":
-                text_value = value.decode("latin1")
-                if text_value.lower().startswith("bearer "):
-                    provided = text_value[7:].strip()
-                break
-        if not hmac.compare_digest(provided, self.token):
-            body = b'{"error":"Unauthorized"}'
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
-            })
-            await send({"type": "http.response.body", "body": body})
-            return
-        await self.app(scope, receive, send)
+__all__ = [
+    "mcp", "list_panels", "panel_status", "panel_api_request", "list_servers",
+    "server_resources", "server_power", "server_console_command", "server_list_files",
+    "server_read_file", "server_write_file", "server_create_directory", "server_delete_files",
+    "server_rename_files", "server_create_backup", "server_list_backups", "server_delete_backup",
+    "server_upload_file_base64", "server_download_file_base64", "BearerGuard",
+    "_safe_json", "_panel", "_panels", "_token_for", "SUPPORTED_APIS", "SUPPORTED_METHODS",
+]
 
 
-if __name__ == "__main__":
-    if HOST not in {"127.0.0.1", "::1", "localhost"} and not MCP_BEARER_TOKEN:
-        raise SystemExit("MAP_MCP_BEARER_TOKEN is required when MAP_HOST is not localhost.")
+def main() -> None:
+    """Run MAP over HTTP or the local stdio MCP transport."""
+    parser = argparse.ArgumentParser(description="Model Access Panel MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=("http", "stdio"),
+        default=os.getenv("MAP_TRANSPORT", "http").strip().lower(),
+        help="MCP transport (default: MAP_TRANSPORT or http)",
+    )
+    args = parser.parse_args()
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+    if HOST not in {"127.0.0.1", "::1", "localhost"} and len(MCP_BEARER_TOKEN) < 32:
+        raise SystemExit("MAP_MCP_BEARER_TOKEN (at least 32 characters) is required for non-loopback HTTP binds.")
     if MCP_BEARER_TOKEN and len(MCP_BEARER_TOKEN) < 32:
         raise SystemExit("MAP_MCP_BEARER_TOKEN must be at least 32 characters.")
     application = BearerGuard(mcp.streamable_http_app(), MCP_BEARER_TOKEN)
     uvicorn.run(application, host=HOST, port=PORT, log_level=os.getenv("MAP_LOG_LEVEL", "info"))
+
+
+if __name__ == "__main__":
+    main()

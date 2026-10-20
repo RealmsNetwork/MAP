@@ -1,0 +1,23 @@
+services:
+  map:
+    build: .
+    image: realmsnetwork-map:local
+    restart: unless-stopped
+    environment:
+      MAP_TRANSPORT: http
+      MAP_HOST: 0.0.0.0
+      MAP_PORT: 8765
+      MAP_PANELS_JSON_B64: ${MAP_PANELS_JSON_B64:?Set MAP_PANELS_JSON_B64 in the deployment environment}
+      MAP_MCP_BEARER_TOKEN: ${MAP_MCP_BEARER_TOKEN:?Set a random bearer token of at least 32 characters}
+      MAP_TRUSTED_WINGS_HOSTS: ${MAP_TRUSTED_WINGS_HOSTS:-}
+      MAP_MAX_RESPONSE_CHARS: ${MAP_MAX_RESPONSE_CHARS:-200000}
+      MAP_MAX_INLINE_FILE_BYTES: ${MAP_MAX_INLINE_FILE_BYTES:-6000000}
+    ports:
+      - "127.0.0.1:8765:8765"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

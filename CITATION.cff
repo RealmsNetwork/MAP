@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use Model Access Panel in your work, please cite this project."
+type: software
+title: "Model Access Panel (MAP)"
+abstract: "A self-hosted, multi-panel Pterodactyl administration gateway over Model Context Protocol."
+authors:
+  - name: "RealmsNetwork"
+repository-code: "https://github.com/RealmsNetwork/MAP"
+license: MIT
