@@ -906,3 +906,59 @@ def test_amp_login_path_rejects_trailing_slash_variant(monkeypatch):
     with pytest.raises(ValueError, match="login is managed automatically"):
         client._api_request("amp", "native", "POST", "Core/Login/", json_body={})
     assert calls == []
+
+
+
+def test_cache_secret_fingerprints_are_keyed_and_stable_within_process():
+    first = client._credential_fingerprint("very-secret-password")
+    second = client._credential_fingerprint("very-secret-password")
+    different = client._credential_fingerprint("different-password")
+
+    assert first == second
+    assert first != different
+    assert first != "very-secret-password"
+    assert len(first) == 64
+
+
+def test_oauth_and_amp_cache_keys_do_not_contain_raw_credentials(monkeypatch):
+    oauth_secret = "oauth-client-secret-value"
+    amp_password = "amp-password-secret-value"
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([
+            {
+                "id": "puffer",
+                "provider": "pufferpanel",
+                "base_url": "https://puffer.example.test",
+                "oauth_client_id": "oauth-id",
+                "oauth_client_secret": oauth_secret,
+            },
+            {
+                "id": "amp",
+                "provider": "amp",
+                "base_url": "https://amp.example.test",
+                "auth_username": "service-user",
+                "auth_password": amp_password,
+            },
+        ]),
+    )
+    oauth_panel = server._panel("puffer")
+    amp_panel = server._panel("amp")
+    oauth_key = "|".join((
+        "puffer",
+        str(oauth_panel.get("base_url", "")),
+        str(oauth_panel.get("oauth_client_id", "")),
+        client._credential_fingerprint(str(oauth_panel.get("oauth_client_secret", ""))),
+        str(oauth_panel.get("oauth_token_path", "/oauth2/token")),
+    ))
+    amp_key = "|".join((
+        "amp",
+        str(amp_panel["base_url"]).rstrip("/"),
+        str(amp_panel.get("auth_username", "")),
+        client._credential_fingerprint(str(amp_panel.get("auth_password", ""))),
+    ))
+
+    assert oauth_secret not in oauth_key
+    assert amp_password not in amp_key
+    assert client._credential_fingerprint(oauth_secret) in oauth_key
+    assert client._credential_fingerprint(amp_password) in amp_key

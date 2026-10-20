@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from typing import Any
@@ -102,6 +104,21 @@ def _safe_json(value: Any) -> Any:
 
 
 
+# Cache fingerprints exist only to keep in-memory auth sessions separated when credentials
+# rotate. Use a process-random HMAC key rather than an unkeyed fast hash of secrets/passwords.
+# The key is intentionally ephemeral because both caches are memory-only.
+_CACHE_FINGERPRINT_KEY = secrets.token_bytes(32)
+
+
+def _credential_fingerprint(value: str) -> str:
+    """Return an opaque, process-local fingerprint for an in-memory cache key."""
+    return hmac.new(
+        _CACHE_FINGERPRINT_KEY,
+        value.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 _OAUTH_CACHE: dict[str, tuple[str, float]] = {}
 _OAUTH_LOCK = threading.Lock()
 _AMP_SESSION_CACHE: dict[str, tuple[str, float]] = {}
@@ -124,7 +141,7 @@ def _oauth_access_token(panel: dict[str, Any]) -> str:
         panel_id,
         str(panel.get("base_url", "")),
         str(panel.get("oauth_client_id", "")),
-        hashlib.sha256(str(panel.get("oauth_client_secret", "")).encode("utf-8")).hexdigest(),
+        _credential_fingerprint(str(panel.get("oauth_client_secret", ""))),
         str(panel.get("oauth_token_path", "/oauth2/token")),
     ))
     now = time.monotonic()
@@ -197,7 +214,7 @@ def _amp_session(panel: dict[str, Any]) -> str:
     password = str(panel.get("auth_password", ""))
     if not username or not password:
         raise RuntimeError(f"AMP panel '{panel_id}' requires auth_username and auth_password.")
-    password_fingerprint = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    password_fingerprint = _credential_fingerprint(password)
     cache_key = "|".join((panel_id, base_url, username, password_fingerprint))
     now = time.monotonic()
     cached = _AMP_SESSION_CACHE.get(cache_key)
