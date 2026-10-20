@@ -35,6 +35,13 @@ def _read_panels() -> dict[str, dict[str, str]]:
     """Load panel URLs and API keys from server-side environment only."""
     panels: dict[str, dict[str, str]] = {}
     raw = os.getenv("MAP_PANELS_JSON", "").strip()
+    if not raw:
+        encoded = os.getenv("MAP_PANELS_JSON_B64", "").strip()
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except Exception as exc:
+                raise RuntimeError("MAP_PANELS_JSON_B64 must be base64-encoded UTF-8 JSON.") from exc
     if raw:
         try:
             entries = json.loads(raw)
