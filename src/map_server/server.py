@@ -408,12 +408,18 @@ def server_upload_file_base64(
             impersonate=IMPERSONATE,
             timeout=90,
             allow_redirects=False,
+            stream=True,
         )
     except Exception as exc:
         raise RuntimeError(f"Wings upload failed ({type(exc).__name__}). Signed URL and credentials were not logged.") from None
+    try:
+        status_code = response.status_code
+    finally:
+        # The upload result body is deliberately unused. Do not buffer an untrusted node response.
+        response.close()
     return {
-        "ok": 200 <= response.status_code < 300,
-        "status_code": response.status_code,
+        "ok": 200 <= status_code < 300,
+        "status_code": status_code,
         "filename": filename,
         "directory": directory,
         "bytes_uploaded": len(contents),
