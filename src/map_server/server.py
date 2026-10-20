@@ -389,6 +389,14 @@ def server_upload_file_base64(
         raise ValueError("server_id contains unsupported characters.")
     if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename or len(filename) > 255:
         raise ValueError("filename must be a single basename, not a path.")
+    if not isinstance(content_base64, str):
+        raise ValueError("content_base64 must be a base64-encoded string.")
+    # Reject oversized encodings before decoding them into an equally large bytes object.
+    max_encoded_chars = 4 * ((MAX_INLINE_FILE_BYTES + 2) // 3)
+    if len(content_base64) > max_encoded_chars:
+        raise ValueError(
+            f"Encoded file exceeds the inline upload limit of {MAX_INLINE_FILE_BYTES} bytes."
+        )
     try:
         contents = base64.b64decode(content_base64, validate=True)
     except Exception as exc:

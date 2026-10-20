@@ -872,3 +872,37 @@ def test_auth_scheme_rejects_header_control_characters(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="auth_scheme"):
         server.list_panels()
+
+
+def test_upload_base64_size_is_checked_before_decoding(monkeypatch):
+    configured_panel(monkeypatch)
+    monkeypatch.setattr(server, "MAX_INLINE_FILE_BYTES", 12)
+    decoded = {"called": False}
+
+    def fake_decode(*args, **kwargs):
+        decoded["called"] = True
+        raise AssertionError("decoder must not run for oversized input")
+
+    monkeypatch.setattr(server.base64, "b64decode", fake_decode)
+    oversized_encoded = "A" * 17  # 12-byte maximum permits at most 16 base64 characters.
+    with pytest.raises(ValueError, match="Encoded file exceeds"):
+        server.server_upload_file_base64("bp", "abc12345", "test.bin", oversized_encoded)
+    assert decoded["called"] is False
+
+
+def test_amp_login_path_rejects_trailing_slash_variant(monkeypatch):
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([{
+            "id": "amp",
+            "provider": "amp",
+            "base_url": "https://amp.example.test",
+            "auth_username": "service-user",
+            "auth_password": "test-password",
+        }]),
+    )
+    calls = []
+    monkeypatch.setattr(client.requests, "post", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(ValueError, match="login is managed automatically"):
+        client._api_request("amp", "native", "POST", "Core/Login/", json_body={})
+    assert calls == []

@@ -373,7 +373,7 @@ def _api_request(
             json_body = {}
         if not isinstance(json_body, dict):
             raise ValueError("AMP json_body must be an object.")
-        if relative.lower() == "core/login":
+        if relative.strip("/").lower() == "core/login":
             raise ValueError("AMP login is managed automatically by MAP; call the desired native API method.")
         json_body = dict(json_body)
         json_body["SESSIONID"] = _amp_session(panel)
