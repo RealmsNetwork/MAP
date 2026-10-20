@@ -196,12 +196,15 @@ def _read_panels() -> dict[str, dict[str, Any]]:
             provider = normalize_provider(os.getenv("PANEL_PROVIDER", "pterodactyl"))
             if provider not in {"pterodactyl", "pelican"}:
                 raise RuntimeError("Legacy single-panel variables support Pterodactyl/Pelican; use MAP_PANELS_JSON for other providers.")
+            panel_version = os.getenv("PANEL_VERSION", "auto").strip().lower()
+            if provider == "pterodactyl" and panel_version not in {"auto", "1", "1.x", "v1", "2", "2.x", "v2"}:
+                raise RuntimeError("PANEL_VERSION must be auto, 1.x, or 2.x.")
             panels["default"] = {
                 "id": "default",
                 "name": legacy_name,
                 "base_url": base_url,
                 "provider": provider,
-                "panel_version": os.getenv("PANEL_VERSION", "auto").strip().lower(),
+                "panel_version": panel_version,
                 "api_base_path": "",
                 "status_path": "",
                 "auth_type": "bearer",

@@ -337,7 +337,7 @@ def test_mcsmanager_action_uses_native_endpoint(monkeypatch):
     result = server.mcsmanager_instance_action("mcsm", "daemon-123", "abc12345", "start")
 
     assert result["ok"] is True
-    assert calls[0][0] == "GET"
+    assert calls[0][0] == "POST"
     assert calls[0][1] == "https://mcsm.example.test/api/protected_instance/open"
     assert calls[0][2]["params"]["uuid"] == "abc12345"
     assert calls[0][2]["params"]["daemonId"] == "daemon-123"
@@ -675,3 +675,71 @@ def test_amp_status_uses_native_post_endpoint(monkeypatch):
     assert calls[0][0] == "login"
     assert calls[1][0] == "POST"
     assert calls[1][1] == "https://amp.example.test/API/Core/GetStatus"
+
+
+def test_panel_status_uses_real_application_endpoint_without_client_key(monkeypatch):
+    monkeypatch.setenv(
+        "MAP_PANELS_JSON",
+        json.dumps([{
+            "id": "application-only",
+            "provider": "pterodactyl",
+            "base_url": "https://panel.example.test",
+            "application_api_key": "application-secret-value",
+        }]),
+    )
+    calls = []
+    response = FakeResponse(body=b'{"data":[]}')
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return response
+
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    result = server.panel_status("application-only")
+
+    assert result["ok"] is True
+    assert calls[0][1] == "https://panel.example.test/api/application/servers"
+    assert calls[0][2]["headers"]["Authorization"] == "Bearer application-secret-value"
+
+
+def test_legacy_pterodactyl_version_setting_is_validated(monkeypatch):
+    monkeypatch.setenv("PANEL_BASE_URL", "https://legacy.example.test")
+    monkeypatch.setenv("PANEL_PROVIDER", "pterodactyl")
+    monkeypatch.setenv("PANEL_VERSION", "not-a-version")
+    monkeypatch.delenv("MAP_PANELS_JSON", raising=False)
+    monkeypatch.delenv("MAP_PANELS_JSON_B64", raising=False)
+
+    with pytest.raises(RuntimeError, match="PANEL_VERSION must be auto, 1.x, or 2.x"):
+        server.list_panels()
+
+
+def test_mcsmanager_9x_uses_legacy_daemon_parameter_and_post_action(monkeypatch):
+    configured_mcsmanager(monkeypatch, panel_version="9.x")
+    calls = []
+    response = FakeResponse(body=b'{"status":200,"data":true}')
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return response
+
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    result = server.mcsmanager_instance_action("mcsm", "daemon-old", "abc12345", "start")
+
+    assert result["ok"] is True
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "https://mcsm.example.test/api/protected_instance/open"
+    assert calls[0][2]["params"]["remote_uuid"] == "daemon-old"
+    assert "daemonId" not in calls[0][2]["params"]
+
+
+def test_mcsmanager_10x_keeps_documented_get_and_daemon_id(monkeypatch):
+    configured_mcsmanager(monkeypatch, panel_version="10.x")
+    calls = []
+    response = FakeResponse(body=b'{"status":200,"data":true}')
+    monkeypatch.setattr(
+        client.requests, "request",
+        lambda method, url, **kwargs: (calls.append((method, url, kwargs)) or response),
+    )
+    server.mcsmanager_instance_action("mcsm", "daemon-new", "abc12345", "stop")
+
+    assert calls[0][0] == "POST"
+    assert calls[0][2]["params"]["daemonId"] == "daemon-new"
+    assert "remote_uuid" not in calls[0][2]["params"]

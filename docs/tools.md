@@ -38,7 +38,7 @@ These tools use MCSManager's native API rather than sending Pterodactyl routes t
 
 Calagopus uses its own API rather than Pterodactyl-compatible endpoints. Use the instance's `/api` documentation and `panel_api_request` with `api="native"`; configure `api_base_path` as `/api` and use a Calagopus API key.
 
-For other MCSManager endpoints, use `panel_api_request` with `api="native"` and the endpoint documented for the installed version. MCSManager 9.x and 10.x differ; verify endpoint semantics before making writes.
+For other MCSManager endpoints, use `panel_api_request` with `api="native"` and the endpoint documented for the installed version. MCSManager 9.x uses `remote_uuid` as the daemon selector; 10.x uses `daemonId`. MAP switches the parameter based on `panel_version`. State-changing instance actions use POST for both generations; 10.x also permits GET for some routes in its frontend, but MAP avoids GET for mutations.
 
 ## Pterodactyl/Pelican-compatible server tools
 

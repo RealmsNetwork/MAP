@@ -128,7 +128,7 @@ Example: PufferPanel with OAuth2 client credentials.
 }
 ```
 
-MCSManager's documented API accepts its key as a query parameter. HTTPS encrypts the request in transit, but reverse-proxy access logs may record query strings. Restrict and redact such logs; never paste raw request URLs into issues. See the [MCSManager authentication guide](https://docs.mcsmanager.com/apis/get_apikey.html).
+Set MCSManager `panel_version` to `9.x` or `10.x` so MAP can choose the correct daemon selector (`remote_uuid` for 9.x, `daemonId` for 10.x). MCSManager's documented API accepts its key as a query parameter. HTTPS encrypts the request in transit, but reverse-proxy access logs may record query strings. Restrict and redact such logs; never paste raw request URLs into issues. See the [MCSManager authentication guide](https://docs.mcsmanager.com/apis/get_apikey.html).
 
 ## Environment variables
 

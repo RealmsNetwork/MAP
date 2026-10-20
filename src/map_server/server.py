@@ -95,11 +95,13 @@ def panel_status(panel_id: str, api: str = "auto") -> dict[str, Any]:
         if provider in PTERODACTYL_COMPATIBLE:
             if panel.get("client_api_key"):
                 api = "client"
+                path = ""
             elif panel.get("application_api_key") or panel.get("admin_api_key"):
                 api = "application"
+                path = "servers"
             else:
                 api = "client"
-            path = ""
+                path = ""
         else:
             api = "native"
             path = str(panel.get("status_path") or ("Core/GetStatus" if provider == "amp" else ""))
@@ -156,9 +158,12 @@ def mcsmanager_list_instances(
         raise ValueError("daemon_id must be between 1 and 256 characters.")
     if page < 1 or page > 1000 or page_size < 1 or page_size > 50:
         raise ValueError("page must be 1–1000 and page_size must be 1–50.")
+    panel = _panel(panel_id)
+    version = str(panel.get("panel_version", "10.x")).lower()
+    daemon_param = "remote_uuid" if version in {"9", "9.x", "v9"} else "daemonId"
     return _api_request(
         panel_id, "native", "GET", "service/remote_service_instances",
-        {"daemonId": daemon_id, "page": page, "page_size": page_size},
+        {daemon_param: daemon_id, "page": page, "page_size": page_size},
     )
 
 
@@ -176,9 +181,17 @@ def mcsmanager_instance_action(
     routes = {"start": "open", "stop": "stop", "restart": "restart", "kill": "kill"}
     if action not in routes:
         raise ValueError("action must be start, stop, restart, or kill.")
+    panel = _panel(panel_id)
+    version = str(panel.get("panel_version", "10.x")).lower()
+    is_v9 = version in {"9", "9.x", "v9"}
+    daemon_param = "remote_uuid" if is_v9 else "daemonId"
+    # Use POST for state-changing actions on both generations. MCSManager 10.x
+    # accepts multiple verbs on this route, while 9.x documentation specifically
+    # shows POST. The daemon selector name remains version-dependent.
+    method = "POST"
     return _api_request(
-        panel_id, "native", "GET", f"protected_instance/{routes[action]}",
-        {"uuid": instance_uuid, "daemonId": daemon_id},
+        panel_id, "native", method, f"protected_instance/{routes[action]}",
+        {"uuid": instance_uuid, daemon_param: daemon_id},
     )
 
 
@@ -194,9 +207,12 @@ def mcsmanager_instance_command(
         raise ValueError("instance_uuid contains unsupported characters.")
     if not command or len(command) > 10000:
         raise ValueError("command must be between 1 and 10000 characters.")
+    panel = _panel(panel_id)
+    version = str(panel.get("panel_version", "10.x")).lower()
+    daemon_param = "remote_uuid" if version in {"9", "9.x", "v9"} else "daemonId"
     return _api_request(
         panel_id, "native", "GET", "protected_instance/command",
-        {"uuid": instance_uuid, "daemonId": daemon_id, "command": command},
+        {"uuid": instance_uuid, daemon_param: daemon_id, "command": command},
     )
 
 
@@ -212,9 +228,12 @@ def mcsmanager_instance_output_log(
         raise ValueError("instance_uuid contains unsupported characters.")
     if not re.fullmatch(r"\d+(?:KB)?", size.strip().upper()):
         raise ValueError("size must be a byte count or a value such as 10KB.")
+    panel = _panel(panel_id)
+    version = str(panel.get("panel_version", "10.x")).lower()
+    daemon_param = "remote_uuid" if version in {"9", "9.x", "v9"} else "daemonId"
     return _api_request(
         panel_id, "native", "GET", "protected_instance/outputlog",
-        {"uuid": instance_uuid, "daemonId": daemon_id, "size": size.strip().upper()},
+        {"uuid": instance_uuid, daemon_param: daemon_id, "size": size.strip().upper()},
     )
 
 
