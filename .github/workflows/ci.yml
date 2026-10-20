@@ -1,0 +1,30 @@
+name: MAP CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install MAP
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Compile source
+        run: python -m compileall -q src
+      - name: Import smoke test
+        run: |
+          python -c "from map_server.server import mcp, panel_url, list_servers, server_resources; print('MAP import smoke test passed')"
