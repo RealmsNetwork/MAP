@@ -444,6 +444,8 @@ def test_pufferpanel_oauth_token_is_cached_and_used(monkeypatch):
     assert api_calls[0][1] == "https://puffer.example.test/api/servers"
     assert api_calls[0][2]["headers"]["Authorization"] == "Bearer cached-access-token"
     assert "oauth-client-secret" not in json.dumps(server.list_panels())
+    assert all("oauth-client-secret" not in key for key in client._OAUTH_CACHE)
+    assert all("oauth-client-secret" not in value[0] for value in client._OAUTH_CACHE.values())
 
 
 def test_pterodactyl_style_tools_reject_unrelated_panel_types(monkeypatch):
@@ -587,6 +589,8 @@ def test_amp_session_authenticates_once_and_injects_session_id(monkeypatch):
     assert first["data"]["SESSIONID"] == "[REDACTED]"
     assert "amp-session-secret" not in json.dumps(first)
     assert "hidden-amp-password" not in json.dumps(server.list_panels())
+    assert all("hidden-amp-password" not in key for key in client._AMP_SESSION_CACHE)
+    assert all("hidden-amp-password" not in value[0] for value in client._AMP_SESSION_CACHE.values())
 
 
 def test_amp_native_api_requires_post_and_json_object(monkeypatch):
@@ -906,59 +910,3 @@ def test_amp_login_path_rejects_trailing_slash_variant(monkeypatch):
     with pytest.raises(ValueError, match="login is managed automatically"):
         client._api_request("amp", "native", "POST", "Core/Login/", json_body={})
     assert calls == []
-
-
-
-def test_cache_secret_fingerprints_are_keyed_and_stable_within_process():
-    first = client._credential_fingerprint("very-secret-password")
-    second = client._credential_fingerprint("very-secret-password")
-    different = client._credential_fingerprint("different-password")
-
-    assert first == second
-    assert first != different
-    assert first != "very-secret-password"
-    assert len(first) == 64
-
-
-def test_oauth_and_amp_cache_keys_do_not_contain_raw_credentials(monkeypatch):
-    oauth_secret = "oauth-client-secret-value"
-    amp_password = "amp-password-secret-value"
-    monkeypatch.setenv(
-        "MAP_PANELS_JSON",
-        json.dumps([
-            {
-                "id": "puffer",
-                "provider": "pufferpanel",
-                "base_url": "https://puffer.example.test",
-                "oauth_client_id": "oauth-id",
-                "oauth_client_secret": oauth_secret,
-            },
-            {
-                "id": "amp",
-                "provider": "amp",
-                "base_url": "https://amp.example.test",
-                "auth_username": "service-user",
-                "auth_password": amp_password,
-            },
-        ]),
-    )
-    oauth_panel = server._panel("puffer")
-    amp_panel = server._panel("amp")
-    oauth_key = "|".join((
-        "puffer",
-        str(oauth_panel.get("base_url", "")),
-        str(oauth_panel.get("oauth_client_id", "")),
-        client._credential_fingerprint(str(oauth_panel.get("oauth_client_secret", ""))),
-        str(oauth_panel.get("oauth_token_path", "/oauth2/token")),
-    ))
-    amp_key = "|".join((
-        "amp",
-        str(amp_panel["base_url"]).rstrip("/"),
-        str(amp_panel.get("auth_username", "")),
-        client._credential_fingerprint(str(amp_panel.get("auth_password", ""))),
-    ))
-
-    assert oauth_secret not in oauth_key
-    assert amp_password not in amp_key
-    assert client._credential_fingerprint(oauth_secret) in oauth_key
-    assert client._credential_fingerprint(amp_password) in amp_key
