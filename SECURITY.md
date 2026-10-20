@@ -4,7 +4,7 @@ Security fixes are developed against the latest version on the default branch. U
 
 ## Private vulnerability reports
 
-Do not publish exploit details, API keys, signed transfer URLs, or proof-of-concept requests in public issues. Use GitHub private vulnerability reporting / Security Advisories when available. Include the affected commit/version, impact, configuration requirements, and a minimal reproduction using dummy credentials. If private reporting is not enabled, contact maintainers privately through GitHub before public disclosure.
+Do not publish exploit details, API keys, signed transfer URLs, or proof-of-concept requests in public issues. Use [GitHub private vulnerability reporting](https://github.com/RealmsNetwork/MAP/security/advisories/new). Private vulnerability reporting is enabled for this repository. Include the affected commit/version, impact, configuration requirements, and a minimal reproduction using dummy credentials.
 
 Maintainers aim to acknowledge credible reports promptly and coordinate a fix before publication.
 
