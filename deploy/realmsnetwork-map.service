@@ -5,8 +5,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=nobody
-Group=nogroup
+User=mapmcp
+Group=mapmcp
 WorkingDirectory=/opt/realmsnetwork-map
 EnvironmentFile=-/etc/realmsnetwork-map/map.env
 Environment=PYTHONUNBUFFERED=1
