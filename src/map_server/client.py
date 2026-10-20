@@ -175,9 +175,9 @@ def _oauth_access_token(panel: dict[str, Any]) -> str:
         if not isinstance(token, str) or not token:
             raise RuntimeError("OAuth2 response did not contain an access_token.")
         try:
-            lifetime = max(10, int(payload.get("expires_in", 300)) - 30)
+            lifetime = max(1, int(payload.get("expires_in", 300)))
         except (TypeError, ValueError):
-            lifetime = 270
+            lifetime = 300
         _OAUTH_CACHE[cache_key] = (token, time.monotonic() + lifetime)
         return token
 

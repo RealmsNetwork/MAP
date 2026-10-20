@@ -743,3 +743,30 @@ def test_mcsmanager_10x_keeps_documented_get_and_daemon_id(monkeypatch):
     assert calls[0][0] == "POST"
     assert calls[0][2]["params"]["daemonId"] == "daemon-new"
     assert "remote_uuid" not in calls[0][2]["params"]
+
+
+def test_oauth_token_with_60_second_lifetime_is_cached_until_refresh_window(monkeypatch):
+    panel = {
+        "id": "short-oauth",
+        "base_url": "https://oauth.example.test",
+        "oauth_client_id": "client",
+        "oauth_client_secret": "secret",
+        "oauth_token_path": "/oauth2/token",
+    }
+    calls = []
+    response = FakeResponse(
+        body=b'{"access_token":"short-lived-token","expires_in":60}',
+        headers={"content-type": "application/json"},
+    )
+    monkeypatch.setattr(
+        client.requests, "post",
+        lambda url, **kwargs: (calls.append((url, kwargs)) or response),
+    )
+    client._OAUTH_CACHE.clear()
+
+    first = client._oauth_access_token(panel)
+    second = client._oauth_access_token(panel)
+
+    assert first == "short-lived-token"
+    assert second == first
+    assert len(calls) == 1
