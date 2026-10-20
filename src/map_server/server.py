@@ -8,11 +8,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 import uvicorn
+from curl_cffi import requests
 from mcp.server.fastmcp import FastMCP
 
 from .client import _api_request, _safe_json, _signed_wings_url
 from .config import (
     HOST,
+    IMPERSONATE,
     MAX_INLINE_FILE_BYTES,
     MCP_BEARER_TOKEN,
     PORT,

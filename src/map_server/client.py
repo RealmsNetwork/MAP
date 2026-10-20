@@ -1,7 +1,6 @@
 """HTTP client for authorized panel APIs and trusted Wings file transfers."""
 from __future__ import annotations
 
-import base64
 import ipaddress
 import os
 from typing import Any
@@ -11,7 +10,6 @@ from curl_cffi import requests
 
 from .config import (
     IMPERSONATE,
-    MAX_INLINE_FILE_BYTES,
     MAX_RESPONSE_CHARS,
     MCP_BEARER_TOKEN,
     SERVER_ID_RE,
