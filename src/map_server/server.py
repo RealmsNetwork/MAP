@@ -31,7 +31,24 @@ from .security import BearerGuard
 from .providers import PTERODACTYL_COMPATIBLE, normalize_provider
 
 
-mcp = FastMCP(MAP_SERVER_NAME, host=HOST, port=PORT)
+mcp = FastMCP(
+    MAP_SERVER_NAME,
+    host=HOST,
+    port=PORT,
+    instructions=(
+        "You are connected to Model Access Panel (MAP), a multi-provider panel administration MCP. "
+        "Before panel-specific work, inspect list_panels, then call panel_api_schema and panel_context "
+        "for the selected panel when available. Use the returned provider, version, server identifiers, "
+        "feature limits, allocations, and effective per-server permissions as working context. "
+        "For Pterodactyl use only configured Client/Application namespaces and Admin only on supported "
+        "2.x installations; for Calagopus use native API paths under the configured API base path. "
+        "panel_api_request is the general endpoint gateway for every documented endpoint the configured "
+        "key can access, including network, databases, schedules, backups, users, startup, infrastructure, "
+        "and administration. Never infer permissions from feature names: respect API 401/403 responses "
+        "and provider-specific schemas. Calagopus and Pterodactyl are different APIs. Pterodactyl file "
+        "deletion is permanent; do not claim a trash/recycle-bin feature."
+    ),
+)
 
 
 @mcp.tool()
@@ -143,6 +160,238 @@ def panel_status(panel_id: str, api: str = "auto") -> dict[str, Any]:
 
 
 @mcp.tool()
+def panel_api_schema(panel_id: str) -> dict[str, Any]:
+    """Inspect the provider API schema and return the version-appropriate API reference.
+
+    Calagopus exposes a live OpenAPI document at /openapi.json when enabled.
+    Pterodactyl publishes versioned official API references; panel_api_request
+    can call any endpoint permitted by the selected key.
+    """
+    panel = _panel(panel_id)
+    provider = normalize_provider(panel.get("provider"))
+    version = str(panel.get("panel_version", "auto")).lower()
+    if provider in PTERODACTYL_COMPATIBLE:
+        apis = {
+            "client": bool(panel.get("client_api_key")),
+            "application": bool(panel.get("application_api_key") or panel.get("admin_api_key")),
+            "admin": provider == "pterodactyl" and bool(panel.get("admin_api_key")) and version not in {"1", "1.x", "v1"},
+        }
+        docs_version = "v2" if version in {"2", "2.x", "v2"} else "v1"
+        schema_url = (
+            "https://pelican.dev/docs/panel/advanced/api-docs/"
+            if provider == "pelican"
+            else f"https://docs.pterodactyl.io/{docs_version}/api"
+        )
+        return {
+            "provider": provider,
+            "configured_version": version,
+            "version_assumption": (
+                "Configured panel_version is auto; v1 reference selected by default. Set panel_version=2.x for Pterodactyl 2.0."
+                if version == "auto" else "Reference matches configured panel_version."
+            ),
+            "schema_type": "official_versioned_reference",
+            "schema_url": schema_url,
+            "api_namespaces": apis,
+            "notes": [
+                "Client API keys are limited to the account and server permissions of their owner.",
+                "Application API keys are limited to the permissions assigned when created.",
+                "Pterodactyl 2.x Admin API requires a root administrator Client API key; 1.x has no Admin API namespace.",
+                "Use panel_context to inspect visible servers and per-server permissions.",
+                "Use panel_api_request for any documented endpoint within a configured namespace.",
+            ],
+        }
+    if provider == "calagopus":
+        live = _api_request(panel_id, "native", "GET", "openapi.json", timeout_seconds=20)
+        if live.get("ok") and isinstance(live.get("data"), dict) and "paths" in live["data"]:
+            schema = live["data"]
+            return {
+                "provider": provider,
+                "schema_type": "live_openapi_3",
+                "schema_available": True,
+                "openapi": schema,
+                "path_count": len(schema.get("paths", {})),
+                "api_documentation": panel["base_url"].rstrip("/") + "/api",
+            }
+        return {
+            "provider": provider,
+            "schema_type": "live_openapi_3",
+            "schema_available": False,
+            "schema_status": live.get("status_code"),
+            "schema_error": live.get("data", live.get("error")),
+            "api_documentation": panel["base_url"].rstrip("/") + "/api",
+            "schema_endpoint": panel["base_url"].rstrip("/") + "/openapi.json",
+            "api_groups": {
+                "client": [
+                    "account and API-key management", "server groups and server inventory",
+                    "per-server resources, logs, websocket, console and power",
+                    "files, settings, startup, subusers, backups and backup groups",
+                    "allocations, firewall, private connections/tunnels",
+                    "classic databases, managed database instances and database hosts",
+                    "schedules, mounts, devices, activity and announcements",
+                ],
+                "admin": [
+                    "panel settings, announcements, assets and extensions",
+                    "locations, nodes, servers, users, roles and OAuth providers",
+                    "nests, eggs, egg configurations and egg repositories",
+                    "database hosts, DB Agent hosts and templates",
+                    "mounts, devices, backup configurations and system backup policies",
+                    "admin activity and statistics",
+                ],
+                "remote": ["node/Wings communication and node-scoped server operations"],
+            },
+            "schema_source": "Calagopus panel OpenAPI generated from backend route annotations; source: https://github.com/calagopus/panel",
+            "notes": [
+                "This panel did not expose its live OpenAPI JSON to the configured API request.",
+                "The installed Calagopus API remains independently callable through panel_api_request; this is not a Pterodactyl-compatible API.",
+                "Use panel_api_request with api='native' and documented paths. A 401/403 is the panel's permission boundary.",
+            ],
+        }
+    return {
+        "provider": provider,
+        "schema_type": "provider_native",
+        "schema_available": False,
+        "api_base_path": panel.get("api_base_path", ""),
+        "notes": ["Use panel_api_request with api='native' and the provider's documented API paths."],
+    }
+
+
+def _permission_catalog_names(data: Any, scopes: tuple[str, ...]) -> dict[str, dict[str, list[str]]]:
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, dict[str, list[str]]] = {}
+    for scope in scopes:
+        groups = data.get(scope, {})
+        if not isinstance(groups, dict):
+            continue
+        result[scope] = {}
+        for group, definition in groups.items():
+            if isinstance(definition, dict):
+                permissions = definition.get("permissions", definition.get("keys", definition))
+                if isinstance(permissions, dict):
+                    result[scope][str(group)] = sorted(str(name) for name in permissions)
+    return result
+
+
+@mcp.tool()
+def panel_context(panel_id: str, page: int = 1, per_page: int = 50) -> dict[str, Any]:
+    """Build an API-aware inventory of visible servers, features, and effective per-server permissions."""
+    if page < 1 or page > 1000 or per_page < 1 or per_page > 100:
+        raise ValueError("page must be 1–1000 and per_page must be 1–100.")
+    panel = _panel(panel_id)
+    provider = normalize_provider(panel.get("provider"))
+    if provider == "calagopus":
+        listed = _api_request(
+            panel_id, "native", "GET", "client/servers",
+            {"page": page, "per_page": per_page, "other": False},
+        )
+        if not listed.get("ok"):
+            return {"ok": False, "provider": provider, "server_inventory": listed}
+        data = listed.get("data", {}).get("servers", {})
+        servers = data.get("data", []) if isinstance(data, dict) else []
+        catalog_result = _api_request(panel_id, "native", "GET", "client/permissions")
+        permission_catalog = _permission_catalog_names(
+            catalog_result.get("data", {}) if catalog_result.get("ok") else {},
+            ("user_permissions", "admin_permissions", "server_permissions"),
+        )
+        return {
+            "ok": True,
+            "provider": provider,
+            "server_inventory": {
+                "total": data.get("total"),
+                "page": data.get("page", page),
+                "per_page": data.get("per_page", per_page),
+            },
+            "servers": [
+                {
+                    "uuid": item.get("uuid"),
+                    "identifier": item.get("uuid_short"),
+                    "name": item.get("name"),
+                    "node": item.get("node_name"),
+                    "status": item.get("status"),
+                    "is_owner": item.get("is_owner"),
+                    "permissions": item.get("permissions", []),
+                    "limits": item.get("limits"),
+                    "feature_limits": item.get("feature_limits"),
+                    "allocation": item.get("allocation"),
+                    "sftp": {"host": item.get("sftp_host"), "port": item.get("sftp_port")},
+                }
+                for item in servers if isinstance(item, dict)
+            ],
+            "permission_catalog": permission_catalog,
+            "permission_catalog_note": "The catalog lists all defined permissions, not every granted admin permission. The server inventory carries effective per-server permissions.",
+            "next": "Use panel_api_schema for the API schema and panel_api_request for additional native endpoints.",
+        }
+    if provider in PTERODACTYL_COMPATIBLE:
+        api = "client" if panel.get("client_api_key") else "application"
+        if api == "application":
+            listed = _api_request(panel_id, api, "GET", "servers", {"page": page, "per_page": per_page})
+        else:
+            listed = _api_request(panel_id, api, "GET", "", {"page": page})
+        if not listed.get("ok"):
+            return {"ok": False, "provider": provider, "api": api, "server_inventory": listed}
+        payload = listed.get("data", {})
+        rows = payload.get("data", []) if isinstance(payload, dict) else []
+        catalog_result = (
+            _api_request(panel_id, "client", "GET", "permissions")
+            if panel.get("client_api_key") else {}
+        )
+        ptero_catalog = (
+            catalog_result.get("data", {}).get("attributes", {}).get("permissions", {})
+            if catalog_result.get("ok") else {}
+        )
+        permission_catalog = _permission_catalog_names(
+            {"server_permissions": ptero_catalog},
+            ("server_permissions",),
+        )
+        output = []
+        for row in rows:
+            attrs = row.get("attributes", {}) if isinstance(row, dict) else {}
+            identifier = attrs.get("identifier") or attrs.get("uuid")
+            detail = (
+                _api_request(panel_id, "client", "GET", f"servers/{identifier}")
+                if identifier and panel.get("client_api_key") else {}
+            )
+            detail_attrs = detail.get("data", {}).get("attributes", {}) if detail.get("ok") else {}
+            meta = detail.get("data", {}).get("meta", {}) if detail.get("ok") else {}
+            output.append({
+                "uuid": attrs.get("uuid") or detail_attrs.get("uuid"),
+                "identifier": identifier,
+                "name": attrs.get("name") or detail_attrs.get("name"),
+                "node": attrs.get("node") or detail_attrs.get("node"),
+                "status": attrs.get("status"),
+                "is_owner": meta.get("is_server_owner", attrs.get("server_owner")),
+                "permissions": meta.get("user_permissions", []),
+                "limits": attrs.get("limits") or detail_attrs.get("limits"),
+                "feature_limits": attrs.get("feature_limits") or detail_attrs.get("feature_limits"),
+                "allocations": (detail_attrs.get("relationships", {}).get("allocations", {}).get("data", [])
+                               if detail_attrs else attrs.get("relationships", {}).get("allocations", {}).get("data", [])),
+                "detail_status": detail.get("status_code"),
+            })
+        return {
+            "ok": True,
+            "provider": provider,
+            "api_used_for_listing": api,
+            "server_inventory": {
+                "total": payload.get("meta", {}).get("pagination", {}).get("total"),
+                "page": payload.get("meta", {}).get("pagination", {}).get("current_page", page),
+                "per_page": payload.get("meta", {}).get("pagination", {}).get("per_page"),
+            },
+            "servers": output,
+            "permission_catalog": permission_catalog,
+            "notes": [
+                "Pterodactyl Client API server details include effective user_permissions; '*' means full permission within that server.",
+                "Application API access is determined by the configured key's assigned permissions. MAP does not elevate or bypass those permissions.",
+                "Use panel_api_request for every other endpoint allowed by the configured API key.",
+            ],
+        }
+    return {
+        "ok": False,
+        "provider": provider,
+        "note": "Context inventory is not provider-adapted yet. Use panel_api_request with api='native'.",
+    }
+
+
+@mcp.tool()
 def panel_api_request(
     panel_id: str,
     api: str,
@@ -157,32 +406,35 @@ def panel_api_request(
     """Request a relative endpoint from any supported panel API.
 
     Pterodactyl/Pelican use client/application (and Pterodactyl 2.x admin) namespaces.
-    MCSManager, Crafty, PufferPanel, and generic REST profiles use api='native'.
-    Arbitrary external URLs are rejected; writes can be destructive.
+    Calagopus, MCSManager, Crafty, PufferPanel, AMP, and generic REST profiles use api='native'.
+    The configured key's permissions remain authoritative; arbitrary external URLs are rejected.
+    Writes can be destructive.
     """
     return _api_request(panel_id, api, method, path, query_params, json_body, raw_body, content_type, timeout_seconds)
 
 
 @mcp.tool()
-def list_servers(panel_id: str, page: int = 1, api: str = "application") -> dict[str, Any]:
-    """List servers from Pterodactyl/Pelican or Calagopus using its native client route."""
+def list_servers(panel_id: str, page: int = 1, api: str = "auto") -> dict[str, Any]:
+    """List servers, preferring the Client API and falling back to Application API."""
     if page < 1 or page > 1000:
         raise ValueError("page must be between 1 and 1000.")
     panel = _panel(panel_id)
     provider = normalize_provider(panel.get("provider"))
     if provider == "calagopus":
-        if api not in {"application", "client", "native"}:
-            raise ValueError("api must be application, client, or native for Calagopus.")
+        if api not in {"auto", "application", "client", "native"}:
+            raise ValueError("api must be auto, application, client, or native for Calagopus.")
         return _api_request(
             panel_id, "native", "GET", "client/servers",
             {"page": page, "per_page": 50, "other": False},
         )
     _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "list_servers")
+    if api == "auto":
+        api = "client" if panel.get("client_api_key") else "application"
     if api == "client":
         return _api_request(panel_id, api, "GET", "", {"page": page})
     if api == "application":
         return _api_request(panel_id, api, "GET", "servers", {"page": page})
-    raise ValueError("api must be client or application for list_servers.")
+    raise ValueError("api must be auto, client, or application for list_servers.")
 
 @mcp.tool()
 def mcsmanager_list_instances(

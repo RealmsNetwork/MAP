@@ -297,6 +297,113 @@ def test_provider_config_defaults_to_legacy_pterodactyl(monkeypatch):
     assert server.list_panels()["panels"][0]["api_mode"] == "pterodactyl_compatible"
 
 
+
+def test_permission_catalog_names_survive_secret_redaction():
+    result = client._safe_json({
+        "user_permissions": {
+            "api-keys": {"create": "Allows creating API keys."},
+            "account": {"password": "Allows changing the account password."},
+        },
+        "server_permissions": {
+            "databases": {"read-password": "Allows viewing a database password."},
+        },
+        "token": "must-not-leak",
+    })
+    assert "api-keys" in result["user_permissions"]
+    assert "password" in result["user_permissions"]["account"]
+    assert "read-password" in result["server_permissions"]["databases"]
+    assert result["token"] == "[REDACTED]"
+
+
+def test_list_servers_auto_prefers_client_key(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([{
+        "id": "ptero", "provider": "pterodactyl", "base_url": "https://ptero.example.test",
+        "client_api_key": "client-key", "application_api_key": "application-key",
+    }]))
+    calls = []
+    monkeypatch.setattr(
+        client.requests, "request",
+        lambda method, url, **kwargs: (calls.append((method, url, kwargs)) or FakeResponse(body=b'{"object":"list","data":[]}')),
+    )
+    result = server.list_servers("ptero")
+    assert result["ok"] is True
+    assert result["api"] == "client"
+    assert calls[0][1] == "https://ptero.example.test/api/client"
+
+
+def test_panel_context_reports_effective_pterodactyl_permissions(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([{
+        "id": "ptero", "provider": "pterodactyl", "base_url": "https://ptero.example.test",
+        "client_api_key": "client-key",
+    }]))
+    def fake_request(method, url, **kwargs):
+        if url.endswith("/api/client"):
+            return FakeResponse(body=json.dumps({
+                "object": "list",
+                "data": [{"object": "server", "attributes": {
+                    "identifier": "abcd1234", "uuid": "12345678-1234-1234-1234-123456789abc",
+                    "name": "Example", "server_owner": True, "feature_limits": {"backups": 4},
+                }}],
+                "meta": {"pagination": {"total": 1, "current_page": 1, "per_page": 50}},
+            }).encode())
+        return FakeResponse(body=json.dumps({
+            "object": "server",
+            "attributes": {"identifier": "abcd1234", "uuid": "12345678-1234-1234-1234-123456789abc",
+                           "name": "Example", "limits": {"memory": 2048},
+                           "relationships": {"allocations": {"data": []}}},
+            "meta": {"is_server_owner": True, "user_permissions": ["*"]},
+        }).encode())
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    result = server.panel_context("ptero")
+    assert result["ok"] is True
+    assert result["servers"][0]["permissions"] == ["*"]
+    assert result["servers"][0]["name"] == "Example"
+
+
+def test_panel_context_reports_calagopus_server_permissions(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([{
+        "id": "cal", "provider": "calagopus", "base_url": "https://cal.example.test",
+        "api_key": "cal-key",
+    }]))
+    monkeypatch.setattr(
+        client.requests, "request",
+        lambda *args, **kwargs: FakeResponse(body=json.dumps({"servers": {
+            "total": 1, "page": 1, "per_page": 50, "data": [{
+                "uuid": "12345678-1234-1234-1234-123456789abc", "uuid_short": "12345678",
+                "name": "Example", "node_name": "node-1", "is_owner": True,
+                "permissions": ["control.console", "backups.read"],
+                "limits": {"memory": 2048}, "feature_limits": {"backups": 3},
+                "allocation": {"ip": "127.0.0.1", "port": 25565},
+            }],
+        }}).encode()),
+    )
+    result = server.panel_context("cal")
+    assert result["ok"] is True
+    assert result["servers"][0]["permissions"] == ["control.console", "backups.read"]
+    assert result["servers"][0]["feature_limits"]["backups"] == 3
+
+
+def test_permission_catalog_name_extraction_supports_both_provider_shapes():
+    catalog = server._permission_catalog_names({
+        "server_permissions": {
+            "files": {"description": "Files", "permissions": {"read": "Read", "delete": "Delete"}},
+            "control": {"description": "Control", "keys": {"console": "Console", "start": "Start"}},
+        }
+    }, ("server_permissions",))
+    assert catalog["server_permissions"]["files"] == ["delete", "read"]
+    assert catalog["server_permissions"]["control"] == ["console", "start"]
+
+
+def test_panel_api_schema_selects_pterodactyl_v1_reference(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([{
+        "id": "ptero", "provider": "pterodactyl", "panel_version": "1.x",
+        "base_url": "https://ptero.example.test", "client_api_key": "client-key",
+        "admin_api_key": "admin-key",
+    }]))
+    result = server.panel_api_schema("ptero")
+    assert result["schema_url"] == "https://docs.pterodactyl.io/v1/api"
+    assert result["api_namespaces"] == {"client": True, "application": True, "admin": False}
+
 def test_pterodactyl_v1_blocks_admin_namespace(monkeypatch):
     monkeypatch.setenv(
         "MAP_PANELS_JSON",

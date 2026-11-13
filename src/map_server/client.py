@@ -80,19 +80,23 @@ def _redact_text(value: str, token: str = "") -> str:
 
 
 
-def _safe_json(value: Any) -> Any:
-    """Redact common credential fields while preserving useful API output."""
+def _safe_json(value: Any, *, permission_catalog: bool = False) -> Any:
+    """Redact credential values without destroying permission names in API schemas."""
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
         for key, item in value.items():
             lower = str(key).lower().replace("-", "_")
-            if any(secret_part in lower for secret_part in SENSITIVE_KEYS):
+            if permission_catalog:
+                safe[key] = _safe_json(item, permission_catalog=True)
+            elif lower in {"permissions", "user_permissions", "admin_permissions", "server_permissions"}:
+                safe[key] = _safe_json(item, permission_catalog=True)
+            elif any(secret_part in lower for secret_part in SENSITIVE_KEYS):
                 safe[key] = "[REDACTED]"
             else:
                 safe[key] = _safe_json(item)
         return safe
     if isinstance(value, list):
-        return [_safe_json(item) for item in value]
+        return [_safe_json(item, permission_catalog=permission_catalog) for item in value]
     if isinstance(value, str):
         value = _redact_text(value)
         value = _redact_url(value)

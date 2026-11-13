@@ -4,6 +4,15 @@ Tool schemas are exposed by the server. The chosen panel's API version and key d
 
 ## Discovery and generic API requests
 
+### panel_api_schema(panel_id)
+
+Returns the provider API reference. For Calagopus, MAP attempts to retrieve the live OpenAPI 3 JSON from the panel root at /openapi.json. If the host disables that endpoint, it reports the HTTP result and provides the Scalar documentation page at /api. For Pterodactyl/Pelican, it selects the official versioned v1 or v2 API reference and reports which configured API namespaces have credentials.
+
+### panel_context(panel_id, page=1, per_page=50)
+
+Builds a context snapshot from live panel responses. Calagopus returns visible servers, their effective per-server permission identifiers, limits, feature limits, node and primary allocation. Pterodactyl/Pelican returns visible servers and, when a Client key is configured, each server's meta.user_permissions, ownership, limits and allocations. A * permission means full access within that server. This tool never elevates permissions; a missing credential or denied endpoint remains unavailable.
+
+
 ### `list_panels()`
 
 Lists panel IDs, names, base URLs, and which API namespaces have configured keys, without returning key values.
@@ -14,7 +23,7 @@ Checks the selected provider. `auto` uses the Client API for Pterodactyl/Pelican
 
 ### `panel_api_request(panel_id, api, method, path, query_params=None, json_body=None, raw_body=None, content_type=None, timeout_seconds=30)`
 
-General-purpose endpoint tool. For Pterodactyl/Pelican, `api` is a supported namespace and `path` is relative to it. For MCSManager, Crafty, PufferPanel, Calagopus, AMP, or generic REST, use `api="native"`; `path` is relative to the configured `api_base_path`. Query parameters are passed separately. Supported methods: GET, POST, PUT, PATCH, DELETE. Supply at most one of JSON body and raw text body.
+General-purpose endpoint tool. For Pterodactyl, api is client, application, or (on 2.x) admin; Pelican supports client and application. For Calagopus, MCSManager, Crafty, PufferPanel, AMP, or generic REST, use api=native; path is relative to the configured api_base_path. Query parameters are passed separately. Supported methods: GET, POST, PUT, PATCH, DELETE. Supply at most one of JSON body and raw text body. This is the catch-all for every other endpoint the configured key permits, including network/firewall, databases, schedules, subusers, backup groups, startup, mounts/devices, activity, account, nodes/infrastructure, and admin endpoints.
 
 This tool can make destructive changes when the key permits them. Review the method, endpoint, target object, and body before write requests.
 
@@ -36,25 +45,27 @@ These tools use MCSManager's native API rather than sending Pterodactyl routes t
 | `mcsmanager_instance_command` | `panel_id, daemon_id, instance_uuid, command` | Send a command through the native HTTP API. |
 | `mcsmanager_instance_output_log` | `panel_id, daemon_id, instance_uuid, size="10KB"` | Read the instance output log. |
 
-Calagopus uses its own API rather than Pterodactyl-compatible endpoints. Use the instance's `/api` documentation and `panel_api_request` with `api="native"`; configure `api_base_path` as `/api` and use a Calagopus API key.
+Calagopus uses its own API rather than Pterodactyl-compatible endpoints. Use panel_api_schema to fetch the live OpenAPI 3 document when exposed and the instance's /api Scalar reference. Use panel_api_request with api=native and configure api_base_path as /api (or leave it empty if the configured base URL already includes /api). GET /api/client/permissions returns the permission catalog; panel_context returns effective per-server permission identifiers. Calagopus has its own Client and Admin API routers, so paths under client/... and admin/... are available subject to the key's permissions.
 
 For other MCSManager endpoints, use `panel_api_request` with `api="native"` and the endpoint documented for the installed version. MCSManager 9.x uses `remote_uuid` as the daemon selector; 10.x uses `daemonId`. MAP switches the parameter based on `panel_version`. State-changing instance actions use POST for both generations; 10.x also permits GET for some routes in its frontend, but MAP avoids GET for mutations.
 
 ## Server tools for Pterodactyl/Pelican and Calagopus
 
-The common server tools also support Calagopus. MAP routes those calls through its native API at `/api/client/servers/{server}/...`; it does not send Pterodactyl namespace requests to Calagopus. `list_panels` reports `dedicated_server_tools: true` when these operations are available.
+The common server tools also support Calagopus. Pterodactyl file deletion is permanent and there is no trash-view/restore tool in that adapter; Calagopus retains its native trash behavior. MAP routes those calls through its native API at `/api/client/servers/{server}/...`; it does not send Pterodactyl namespace requests to Calagopus. `list_panels` reports `dedicated_server_tools: true` when these operations are available.
 
-| Operation | Calagopus behavior |
-| --- | --- |
-| Server listing | `GET /api/client/servers` with page/per-page pagination. |
-| Resources, power, console | Native server routes; power uses the Calagopus `action` field. |
-| File listing | Directory listing with `page` and `per_page`. |
-| Text read/write | Reads UTF-8 content even when the panel labels it `application/octet-stream`; writes use `text/plain`. Binary files use the base64 transfer tools. |
-| Directory, rename, delete | Uses `files/create-directory`, `files/rename`, and `files/delete`. Deletion goes to Calagopus trash by default; set `permanent=true` to permanently delete. |
-| Backups | Uses native backup create/list/delete routes and the `ignored_files` field. |
-| Binary upload/download | Obtains short-lived signed URLs from Calagopus and transfers bounded data directly to the Wings host. The exact hostname must be listed in `MAP_TRUSTED_WINGS_HOSTS` unless it matches the panel hostname. |
+| Operation | Pterodactyl/Pelican behavior | Calagopus behavior |
+| --- | --- | --- |
+| Server listing | Client or Application API; auto prefers a configured Client key, then Application. | GET /api/client/servers with page/per-page pagination. |
+| Resources, power, console | Client API routes; power uses the Pterodactyl signal field. | Native server routes; power uses the Calagopus action field. |
+| File listing | Client API directory listing. | Directory listing with page and per_page. |
+| Text read/write | Client API file contents and write routes. | Reads UTF-8 content even when labeled application/octet-stream; writes use text/plain. Binary files use the base64 transfer tools. |
+| Directory, rename, delete | Create-folder, rename and delete routes; deletion is permanent (no trash viewer). | Uses files/create-directory, files/rename, and files/delete. Deletion goes to Calagopus trash by default; set permanent=true to permanently delete. |
+| Backups | Client API create/list/delete; restore, download, lock, and other operations remain available through the generic API. | Native backup create/list/delete routes and ignored_files field. |
+| Network and databases | Client API allocations and database routes; broader application operations where configured. | Native allocations, firewall, connections, databases, and managed DB Agent endpoints. |
+| Schedules and access | Client API schedules and subuser routes. | Native schedules and subuser routes. |
+| Binary upload/download | Signed Wings URLs, validated against the panel hostname or exact trusted Wings hosts. | Signed Wings URLs, validated against the panel hostname or exact trusted Wings hosts. |
 
-Other Calagopus endpoints (activity, startup, schedules, databases, allocations, backup restore/groups, search, archives, and more) remain available through `panel_api_request` with `api="native"` and a path from that panel's OpenAPI reference. The public documentation page is `/api`; the OpenAPI JSON is at the panel root `/openapi.json`.
+Other Calagopus endpoints (activity, startup, schedules, databases, allocations, backup restore/groups, search, archives, and more) remain available through panel_api_request with api=native and paths from the installed panel's API reference. The Scalar documentation page is /api; upstream Calagopus serves OpenAPI JSON at the panel root /openapi.json, but a deployed host may return 404 if that route is disabled. panel_api_schema reports the actual result instead of pretending the schema was retrieved.
 
 | Tool | Parameters | Purpose |
 | --- | --- | --- |

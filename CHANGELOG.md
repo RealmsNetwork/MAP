@@ -4,6 +4,9 @@ MAP is currently in beta.
 
 ## Unreleased
 
+- Add provider-aware API schema discovery and panel context inventory for Pterodactyl/Pelican and Calagopus, including visible servers, effective per-server permissions, limits, allocations, and feature limits.
+- Preserve permission catalog identifiers such as password, api-keys, and read-token in redacted API responses instead of mistaking capability names for secret values.
+- Make list_servers(api="auto") prefer the Client API when configured and fall back to Application API; document full generic API access for network, databases, schedules, subusers, backup groups, startup, mounts/devices, activity, and admin routes.
 - Add native Calagopus support to common server tools: listing, resources, power, console, paginated file browsing, UTF-8 file reads/writes, directory creation, trash-aware delete, rename, backups, and trusted signed file transfers.
 - Decode Calagopus text file responses even when the panel sends `application/octet-stream`; retain bounded base64 transfer for binary files.
 - Prioritize explicit JSON and legacy base64 panel configuration over the on-disk panel file, preventing production configuration from shadowing deliberate overrides.

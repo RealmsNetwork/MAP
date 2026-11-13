@@ -20,8 +20,8 @@ MAP is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io/) 
 
 - **Multiple providers:** each panel has its own ID, origin, provider type, endpoint prefix, and credentials.
 - **Broad API access:** namespaced Client/Application/Admin requests for compatible panels and a generic native REST request tool supporting GET, POST, PUT, PATCH, and DELETE.
-- **Server operations:** Pterodactyl/Pelican and Calagopus server listing, power/resources/console/file/backup tools; native MCSManager instance list, power, console-command, and output-log tools; AMP session-based native calls.
-- **Files and backups:** browse and paginate, read UTF-8 text, write, create directories, rename, trash/delete, manage backups, and transfer bounded binary files through exact trusted Wings hosts.
+- **Server operations:** Pterodactyl/Pelican and Calagopus server listing, power/resources/console/file/backup tools, API schema discovery, and permission-aware panel context; native MCSManager instance list, power, console-command, and output-log tools; AMP session-based native calls.
+- **Files and backups:** browse and paginate, read UTF-8 text, write, create directories, rename, use provider-specific deletion behavior, manage backups, and transfer bounded binary files through exact trusted Wings hosts.
 - **Two MCP transports:** Streamable HTTP for hosted deployments and stdio for local MCP clients.
 - **Customization:** configure the MCP display name, request/response limits, native API prefix, auth scheme/header/query parameter, optional custom headers, panel routing, timeout, and trusted Wings hosts.
 - **Deployment options:** Docker, systemd, and interactive panel configuration.
