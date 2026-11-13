@@ -351,12 +351,15 @@ def _api_request(
     raw_body: str | None = None,
     content_type: str | None = None,
     timeout_seconds: int = 30,
+    response_mode: str = "auto",
 ) -> dict[str, Any]:
     panel = _panel(panel_id)
     provider = normalize_provider(panel.get("provider"))
     method = method.upper().strip()
     if method not in SUPPORTED_METHODS:
         raise ValueError("method must be GET, POST, PUT, PATCH, or DELETE.")
+    if response_mode not in {"auto", "text"}:
+        raise ValueError("response_mode must be auto or text.")
     if json_body is not None and raw_body is not None:
         raise ValueError("Pass json_body or raw_body, not both.")
     if raw_body is not None and method in {"GET", "DELETE"}:
@@ -494,6 +497,20 @@ def _api_request(
     body = b"".join(chunks)
     if not body:
         data: Any = None
+    elif response_mode == "text":
+        try:
+            text_value = _redact_text(body.decode("utf-8-sig"), token=token)
+        except UnicodeDecodeError:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "method": method,
+                "api": api_kind,
+                "provider": provider,
+                "path": "/" + relative,
+                "error": "The requested file is not valid UTF-8 text. Use server_download_file_base64 for binary files.",
+            }
+        data = text_value[:MAX_RESPONSE_CHARS] + "…[truncated]" if len(text_value) > MAX_RESPONSE_CHARS else text_value
     elif "json" in response_type.lower():
         try:
             data = _safe_json(json.loads(body))
@@ -526,7 +543,15 @@ def _api_request(
     }
 
 
-def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+def _signed_wings_url(
+    panel_id: str, server_id: str, operation: str, query: dict[str, Any]
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Obtain a short-lived file-transfer URL from a supported panel provider.
+
+    Pterodactyl/Pelican return the URL in ``attributes.url``; Calagopus returns
+    it directly as ``url``. In both cases the destination must be HTTPS and
+    match the panel hostname or an exact MAP_TRUSTED_WINGS_HOSTS entry.
+    """
     if not SERVER_ID_RE.fullmatch(server_id or ""):
         raise ValueError("server_id contains unsupported characters.")
     if operation not in {"upload", "download"}:
@@ -539,17 +564,43 @@ def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict
         raise ValueError("File-transfer query must be JSON-serializable.") from None
     if query_size > 65536:
         raise ValueError("File-transfer query exceeds the 64 KB input limit.")
+
     panel = _panel(panel_id)
-    if normalize_provider(panel.get("provider")) not in PTERODACTYL_COMPATIBLE:
-        raise ValueError(
-            "The signed Wings upload/download tools require Pterodactyl or Pelican; use the provider's native API for other panels."
+    provider = normalize_provider(panel.get("provider"))
+    if provider in PTERODACTYL_COMPATIBLE:
+        token = _token_for(panel, "client")
+        request_url = f"{panel['base_url']}/api/client/servers/{server_id}/files/{operation}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "Application/vnd.pterodactyl.v1+json",
+        }
+        params = dict(query)
+    elif provider == "calagopus":
+        request_url, api_kind, _, _ = route_request(
+            panel, "native", "client/servers/" + server_id + "/files/" + operation
         )
-    token = _token_for(panel, "client")
+        headers = {"Accept": "application/json"}
+        params = dict(query)
+        custom_headers = panel.get("custom_headers", {})
+        if isinstance(custom_headers, dict):
+            for name, value in custom_headers.items():
+                lower = str(name).lower()
+                if lower not in {
+                    "host", "content-length", "connection", "transfer-encoding",
+                    "proxy-authorization", "authorization",
+                }:
+                    headers[str(name)] = str(value)
+        _apply_panel_auth(panel, api_kind, headers, params)
+    else:
+        raise ValueError(
+            f"Signed file transfers are not implemented for provider '{provider}'."
+        )
+
     try:
         response = requests.get(
-            f"{panel['base_url']}/api/client/servers/{server_id}/files/{operation}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "Application/vnd.pterodactyl.v1+json"},
-            params=query,
+            request_url,
+            headers=headers,
+            params=params,
             impersonate=IMPERSONATE,
             timeout=30,
             allow_redirects=False,
@@ -577,22 +628,27 @@ def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict
                 return None, {"ok": False, "status_code": response.status_code, "error": "Panel file-transfer metadata exceeded 64 KB."}
             chunks.append(chunk)
         payload = json.loads(b"".join(chunks).decode("utf-8"))
-        url = payload.get("attributes", {}).get("url")
+        if provider in PTERODACTYL_COMPATIBLE:
+            signed_url = payload.get("attributes", {}).get("url")
+        else:
+            signed_url = payload.get("url")
     except (ValueError, AttributeError, UnicodeDecodeError):
-        url = None
+        signed_url = None
     finally:
         response.close()
-    if not isinstance(url, str) or not url:
+
+    if not isinstance(signed_url, str) or not signed_url:
         return None, {"ok": False, "status_code": response.status_code, "error": "Panel did not return a signed file-transfer URL."}
-    parsed = urlparse(url)
+    parsed = urlparse(signed_url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        return None, {"ok": False, "status_code": response.status_code, "error": "The signed Wings URL is not an acceptable HTTPS URL."}
+        return None, {"ok": False, "status_code": response.status_code, "error": "The signed file-transfer URL is not an acceptable HTTPS URL."}
     try:
         address = ipaddress.ip_address(parsed.hostname)
     except ValueError:
         address = None
     if address and (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved):
-        return None, {"ok": False, "status_code": response.status_code, "error": "The signed Wings URL points at a private or reserved IP."}
+        return None, {"ok": False, "status_code": response.status_code, "error": "The signed file-transfer URL points at a private or reserved IP."}
+
     panel_host = urlparse(panel["base_url"]).hostname or ""
     trusted_hosts = {panel_host.lower()}
     trusted_hosts.update(
@@ -604,6 +660,6 @@ def _signed_wings_url(panel_id: str, server_id: str, operation: str, query: dict
         return None, {
             "ok": False,
             "status_code": response.status_code,
-            "error": f"Wings host '{parsed.hostname}' is not trusted. Add its exact hostname to MAP_TRUSTED_WINGS_HOSTS on the EU VPS.",
+            "error": f"File-transfer host '{parsed.hostname}' is not trusted. Add its exact hostname to MAP_TRUSTED_WINGS_HOSTS on the EU VPS.",
         }
-    return url, None
+    return signed_url, None

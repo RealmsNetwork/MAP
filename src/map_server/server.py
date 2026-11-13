@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import uvicorn
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 from mcp.server.fastmcp import FastMCP
 
 from .client import _api_request, _safe_json, _signed_wings_url
@@ -69,7 +69,7 @@ def list_panels() -> dict[str, Any]:
             "https": urlparse(panel["base_url"]).scheme == "https",
             "auth_type": panel.get("auth_type", "bearer"),
             "apis_available": apis_available,
-            "dedicated_server_tools": ptero_compatible or provider == "mcsmanager",
+            "dedicated_server_tools": ptero_compatible or provider in {"mcsmanager", "calagopus"},
         })
     return {"panels": result, "count": len(result)}
 
@@ -84,6 +84,36 @@ def _require_panel_provider(panel_id: str, allowed: set[str], operation: str) ->
             f"Supported providers for this tool: {expected}. Use panel_api_request with api='native' for other panels."
         )
     return panel
+
+
+def _server_api_request(
+    panel_id: str,
+    server_id: str,
+    method: str,
+    endpoint: str,
+    query_params: dict[str, Any] | None = None,
+    json_body: Any = None,
+    raw_body: str | None = None,
+    content_type: str | None = None,
+    response_mode: str = "auto",
+) -> dict[str, Any]:
+    """Route common server operations through the selected provider's API namespace."""
+    panel = _require_panel_provider(
+        panel_id, PTERODACTYL_COMPATIBLE | {"calagopus"}, "server operation"
+    )
+    if not SERVER_ID_RE.fullmatch(server_id or ""):
+        raise ValueError("server_id contains unsupported characters.")
+    provider = normalize_provider(panel.get("provider"))
+    if provider in PTERODACTYL_COMPATIBLE:
+        api = "client"
+        path = f"servers/{server_id}/{endpoint}"
+    else:
+        api = "native"
+        path = f"client/servers/{server_id}/{endpoint}"
+    return _api_request(
+        panel_id, api, method, path, query_params, json_body, raw_body,
+        content_type, response_mode=response_mode,
+    )
 
 
 @mcp.tool()
@@ -135,18 +165,24 @@ def panel_api_request(
 
 @mcp.tool()
 def list_servers(panel_id: str, page: int = 1, api: str = "application") -> dict[str, Any]:
-    """List servers using the Application API, or the Client API when api='client'."""
+    """List servers from Pterodactyl/Pelican or Calagopus using its native client route."""
     if page < 1 or page > 1000:
         raise ValueError("page must be between 1 and 1000.")
+    panel = _panel(panel_id)
+    provider = normalize_provider(panel.get("provider"))
+    if provider == "calagopus":
+        if api not in {"application", "client", "native"}:
+            raise ValueError("api must be application, client, or native for Calagopus.")
+        return _api_request(
+            panel_id, "native", "GET", "client/servers",
+            {"page": page, "per_page": 50, "other": False},
+        )
     _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "list_servers")
     if api == "client":
-        # Pterodactyl 1.x and 2.x list the user's servers at GET /api/client.
         return _api_request(panel_id, api, "GET", "", {"page": page})
     if api == "application":
         return _api_request(panel_id, api, "GET", "servers", {"page": page})
     raise ValueError("api must be client or application for list_servers.")
-
-
 
 @mcp.tool()
 def mcsmanager_list_instances(
@@ -240,137 +276,141 @@ def mcsmanager_instance_output_log(
 @mcp.tool()
 def server_resources(panel_id: str, server_id: str) -> dict[str, Any]:
     """Read live resource usage and running state for a server."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_resources")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "GET", f"servers/{server_id}/resources")
-
+    return _server_api_request(panel_id, server_id, "GET", "resources")
 
 @mcp.tool()
 def server_power(panel_id: str, server_id: str, signal: str) -> dict[str, Any]:
-    """Start, stop, restart, or force-kill a server through the Pterodactyl Client API."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_power")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    signal = signal.lower().strip()
-    if signal not in {"start", "stop", "restart", "kill"}:
+    """Start, stop, restart, or force-kill a server through its provider API."""
+    action = signal.lower().strip()
+    if action not in {"start", "stop", "restart", "kill"}:
         raise ValueError("signal must be start, stop, restart, or kill.")
-    return _api_request(panel_id, "client", "POST", f"servers/{server_id}/power", json_body={"signal": signal})
-
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    body = {"signal": action} if provider in PTERODACTYL_COMPATIBLE else {"action": action}
+    return _server_api_request(panel_id, server_id, "POST", "power", json_body=body)
 
 @mcp.tool()
 def server_console_command(panel_id: str, server_id: str, command: str) -> dict[str, Any]:
     """Send a console command to a server. Server state and API permissions still apply."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_console_command")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
     if not command or len(command) > 10000:
         raise ValueError("command must be between 1 and 10000 characters.")
-    return _api_request(panel_id, "client", "POST", f"servers/{server_id}/command", json_body={"command": command})
-
+    return _server_api_request(
+        panel_id, server_id, "POST", "command", json_body={"command": command}
+    )
 
 @mcp.tool()
-def server_list_files(panel_id: str, server_id: str, directory: str = "/") -> dict[str, Any]:
-    """List files and folders in a server directory."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_list_files")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "GET", f"servers/{server_id}/files/list", {"directory": directory})
-
+def server_list_files(
+    panel_id: str, server_id: str, directory: str = "/", page: int = 1, per_page: int = 100
+) -> dict[str, Any]:
+    """List files and folders in a server directory, with pagination on Calagopus."""
+    if page < 1 or page > 1000 or per_page < 1 or per_page > 1000:
+        raise ValueError("page must be 1–1000 and per_page must be 1–1000.")
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    params = {"directory": directory}
+    if provider == "calagopus":
+        params.update({"page": page, "per_page": per_page})
+    return _server_api_request(panel_id, server_id, "GET", "files/list", params)
 
 @mcp.tool()
 def server_read_file(panel_id: str, server_id: str, file: str) -> dict[str, Any]:
-    """Read a text file from the server filesystem."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_read_file")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "GET", f"servers/{server_id}/files/contents", {"file": file})
-
+    """Read a UTF-8 text file, including Calagopus files served as octet-stream."""
+    if not file or len(file) > 4096:
+        raise ValueError("file must be between 1 and 4096 characters.")
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    return _server_api_request(
+        panel_id, server_id, "GET", "files/contents", {"file": file},
+        response_mode="text" if provider == "calagopus" else "auto",
+    )
 
 @mcp.tool()
 def server_write_file(panel_id: str, server_id: str, file: str, content: str) -> dict[str, Any]:
-    """Create or overwrite a text file on a server. Panel permissions apply."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_write_file")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
+    """Create or overwrite a UTF-8 text file on a server. Panel permissions apply."""
+    if not file or len(file) > 4096:
+        raise ValueError("file must be between 1 and 4096 characters.")
     if len(content.encode("utf-8")) > 2_000_000:
         raise ValueError("Text file content exceeds MAP's 2 MB inline write limit.")
-    return _api_request(
-        panel_id, "client", "POST", f"servers/{server_id}/files/write",
-        {"file": file}, raw_body=content, content_type="text/plain; charset=utf-8",
+    return _server_api_request(
+        panel_id, server_id, "POST", "files/write", {"file": file},
+        raw_body=content, content_type="text/plain; charset=utf-8",
     )
-
 
 @mcp.tool()
 def server_create_directory(panel_id: str, server_id: str, name: str, root: str = "/") -> dict[str, Any]:
     """Create a directory in the server filesystem."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_create_directory")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "POST", f"servers/{server_id}/files/create-folder",
-                        json_body={"name": name, "root": root})
-
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    if provider == "calagopus":
+        return _server_api_request(
+            panel_id, server_id, "POST", "files/create-directory",
+            json_body={"name": name, "root": root},
+        )
+    return _server_api_request(
+        panel_id, server_id, "POST", "files/create-folder",
+        json_body={"name": name, "root": root},
+    )
 
 @mcp.tool()
-def server_delete_files(panel_id: str, server_id: str, files: list[str], root: str = "/") -> dict[str, Any]:
-    """Delete selected server files or folders permanently."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_delete_files")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
+def server_delete_files(
+    panel_id: str, server_id: str, files: list[str], root: str = "/", permanent: bool = False
+) -> dict[str, Any]:
+    """Delete selected server files or folders; Calagopus uses its trash unless permanent is true."""
     if not files or len(files) > 500:
         raise ValueError("files must contain between 1 and 500 paths.")
-    return _api_request(panel_id, "client", "POST", f"servers/{server_id}/files/delete",
-                        json_body={"root": root, "files": files})
-
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    body: dict[str, Any] = {"root": root, "files": files}
+    if provider == "calagopus":
+        body["permanent"] = bool(permanent)
+    return _server_api_request(
+        panel_id, server_id, "POST", "files/delete", json_body=body
+    )
 
 @mcp.tool()
-def server_rename_files(panel_id: str, server_id: str, root: str, files: list[dict[str, str]]) -> dict[str, Any]:
+def server_rename_files(
+    panel_id: str, server_id: str, root: str, files: list[dict[str, str]]
+) -> dict[str, Any]:
     """Rename or move files using a list of from/to pairs."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_rename_files")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
     if not files or len(files) > 200:
         raise ValueError("files must contain between 1 and 200 rename pairs.")
     for item in files:
         if not isinstance(item, dict) or not item.get("from") or not item.get("to"):
             raise ValueError("Each rename pair must contain non-empty from and to fields.")
-    return _api_request(panel_id, "client", "PUT", f"servers/{server_id}/files/rename",
-                        json_body={"root": root, "files": files})
-
+    return _server_api_request(
+        panel_id, server_id, "PUT", "files/rename",
+        json_body={"root": root, "files": files},
+    )
 
 @mcp.tool()
-def server_create_backup(panel_id: str, server_id: str, name: str | None = None, ignored: list[str] | None = None) -> dict[str, Any]:
-    """Start a backup for a server."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_create_backup")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
+def server_create_backup(
+    panel_id: str, server_id: str, name: str | None = None, ignored: list[str] | None = None
+) -> dict[str, Any]:
+    """Start a server backup."""
+    provider = normalize_provider(_panel(panel_id).get("provider"))
     body: dict[str, Any] = {}
+    if provider == "calagopus":
+        body["ignored_files"] = ignored or []
+    elif ignored:
+        body["ignored"] = ignored
     if name:
         body["name"] = name[:191]
-    if ignored:
-        body["ignored"] = ignored
-    return _api_request(panel_id, "client", "POST", f"servers/{server_id}/backups", json_body=body)
-
+    return _server_api_request(panel_id, server_id, "POST", "backups", json_body=body)
 
 @mcp.tool()
-def server_list_backups(panel_id: str, server_id: str) -> dict[str, Any]:
-    """List backups registered for a server."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_list_backups")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "GET", f"servers/{server_id}/backups")
-
+def server_list_backups(
+    panel_id: str, server_id: str, page: int = 1, per_page: int = 50
+) -> dict[str, Any]:
+    """List server backups, with pagination on Calagopus."""
+    if page < 1 or page > 1000 or per_page < 1 or per_page > 1000:
+        raise ValueError("page must be 1–1000 and per_page must be 1–1000.")
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    params = {"page": page, "per_page": per_page, "ungrouped": False} if provider == "calagopus" else None
+    return _server_api_request(panel_id, server_id, "GET", "backups", params)
 
 @mcp.tool()
 def server_delete_backup(panel_id: str, server_id: str, backup_id: str) -> dict[str, Any]:
-    """Delete a server backup by UUID. This is destructive."""
-    _require_panel_provider(panel_id, PTERODACTYL_COMPATIBLE, "server_delete_backup")
-    if not SERVER_ID_RE.fullmatch(server_id or ""):
-        raise ValueError("server_id contains unsupported characters.")
+    """Delete a server backup by ID. This is destructive."""
     if not SERVER_ID_RE.fullmatch(backup_id or ""):
         raise ValueError("backup_id contains unsupported characters.")
-    return _api_request(panel_id, "client", "DELETE", f"servers/{server_id}/backups/{backup_id}")
-
+    return _server_api_request(
+        panel_id, server_id, "DELETE", f"backups/{backup_id}"
+    )
 
 @mcp.tool()
 def server_upload_file_base64(
@@ -389,6 +429,10 @@ def server_upload_file_base64(
         raise ValueError("server_id contains unsupported characters.")
     if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename or len(filename) > 255:
         raise ValueError("filename must be a single basename, not a path.")
+    if not isinstance(directory, str) or not directory or len(directory) > 4096 or "\\" in directory:
+        raise ValueError("directory must be a valid server-relative path.")
+    if any(part == ".." for part in directory.split("/")):
+        raise ValueError("directory must not contain parent path segments.")
     if not isinstance(content_base64, str):
         raise ValueError("content_base64 must be a base64-encoded string.")
     # Reject oversized encodings before decoding them into an equally large bytes object.
@@ -405,26 +449,37 @@ def server_upload_file_base64(
         raise ValueError("Refusing to upload an empty file.")
     if len(contents) > MAX_INLINE_FILE_BYTES:
         raise ValueError(f"File exceeds MAP_MAX_INLINE_FILE_BYTES ({MAX_INLINE_FILE_BYTES}).")
-    url, error = _signed_wings_url(panel_id, server_id, "upload", {"directory": directory})
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    if provider == "calagopus":
+        url, error = _signed_wings_url(panel_id, server_id, "upload", {})
+    else:
+        url, error = _signed_wings_url(panel_id, server_id, "upload", {"directory": directory})
     if error:
         return error
+    multipart = CurlMime()
     try:
+        multipart.addpart(
+            name="files", filename=filename,
+            content_type="application/octet-stream", data=contents,
+        )
         response = requests.post(
             url,
-            files={"files": (filename, contents, "application/octet-stream")},
-            data={"directory": directory},
+            multipart=multipart,
+            params={"directory": directory},
             impersonate=IMPERSONATE,
             timeout=90,
             allow_redirects=False,
             stream=True,
         )
+        try:
+            status_code = response.status_code
+        finally:
+            # The upload result body is deliberately unused. Do not buffer an untrusted node response.
+            response.close()
     except Exception as exc:
         raise RuntimeError(f"Wings upload failed ({type(exc).__name__}). Signed URL and credentials were not logged.") from None
-    try:
-        status_code = response.status_code
     finally:
-        # The upload result body is deliberately unused. Do not buffer an untrusted node response.
-        response.close()
+        multipart.close()
     return {
         "ok": 200 <= status_code < 300,
         "status_code": status_code,
@@ -445,7 +500,22 @@ def server_download_file_base64(
     Inline downloads are capped by MAP_MAX_INLINE_FILE_BYTES. Signed Wings URLs are never returned
     to the MCP caller; MAP follows them only for explicitly trusted Wings hostnames.
     """
-    url, error = _signed_wings_url(panel_id, server_id, "download", {"file": file})
+    if not file or len(file) > 4096 or "\\" in file:
+        raise ValueError("file must be a valid server-relative path.")
+    provider = normalize_provider(_panel(panel_id).get("provider"))
+    if provider == "calagopus":
+        normalized = file.lstrip("/")
+        parts = normalized.split("/")
+        if not normalized or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("file must not contain empty, current, or parent path segments.")
+        filename = parts[-1]
+        root = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+        transfer_query = {
+            "root": root, "files": [filename], "directory": False, "archive_format": "zip"
+        }
+    else:
+        transfer_query = {"file": file}
+    url, error = _signed_wings_url(panel_id, server_id, "download", transfer_query)
     if error:
         return error
     try:

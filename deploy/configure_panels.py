@@ -2,7 +2,6 @@
 """Configure MAP panel API credentials interactively without echoing secrets."""
 from __future__ import annotations
 
-import base64
 import getpass
 import ipaddress
 import grp
@@ -13,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 CONFIG = Path("/etc/realmsnetwork-map/map.env")
+PANELS_CONFIG = Path("/etc/realmsnetwork-map/panels.json")
 PANEL_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 
 def read_settings() -> dict[str, str]:
@@ -219,7 +219,6 @@ def main() -> int:
         print("Cancelled; no configuration was changed.")
         return 1
 
-    encoded = base64.b64encode(json.dumps(panels, separators=(",", ":")).encode("utf-8")).decode("ascii")
     settings = {
         "MAP_HOST": host,
         "MAP_PORT": existing.get("MAP_PORT", "8765"),
@@ -230,10 +229,13 @@ def main() -> int:
         "MAP_MAX_INLINE_FILE_BYTES": existing.get("MAP_MAX_INLINE_FILE_BYTES", "6000000"),
         "MAP_LOG_LEVEL": existing.get("MAP_LOG_LEVEL", "info"),
         "MAP_TRUSTED_WINGS_HOSTS": trusted_hosts,
-        "MAP_PANELS_JSON_B64": encoded,
+        "MAP_PANELS_FILE": str(PANELS_CONFIG),
     }
     if bearer:
         settings["MAP_MCP_BEARER_TOKEN"] = bearer
+    PANELS_CONFIG.write_text(json.dumps(panels, indent=2) + "\n", encoding="utf-8")
+    os.chown(PANELS_CONFIG, 0, map_gid)
+    os.chmod(PANELS_CONFIG, 0o640)
     output = "# Managed by deploy/configure_panels.py. Keep root-owned; do not commit.\n"
     output += "".join(f"{key}={value}\n" for key, value in settings.items())
     CONFIG.parent.mkdir(mode=0o750, parents=True, exist_ok=True)

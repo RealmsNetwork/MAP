@@ -40,7 +40,21 @@ Calagopus uses its own API rather than Pterodactyl-compatible endpoints. Use the
 
 For other MCSManager endpoints, use `panel_api_request` with `api="native"` and the endpoint documented for the installed version. MCSManager 9.x uses `remote_uuid` as the daemon selector; 10.x uses `daemonId`. MAP switches the parameter based on `panel_version`. State-changing instance actions use POST for both generations; 10.x also permits GET for some routes in its frontend, but MAP avoids GET for mutations.
 
-## Pterodactyl/Pelican-compatible server tools
+## Server tools for Pterodactyl/Pelican and Calagopus
+
+The common server tools also support Calagopus. MAP routes those calls through its native API at `/api/client/servers/{server}/...`; it does not send Pterodactyl namespace requests to Calagopus. `list_panels` reports `dedicated_server_tools: true` when these operations are available.
+
+| Operation | Calagopus behavior |
+| --- | --- |
+| Server listing | `GET /api/client/servers` with page/per-page pagination. |
+| Resources, power, console | Native server routes; power uses the Calagopus `action` field. |
+| File listing | Directory listing with `page` and `per_page`. |
+| Text read/write | Reads UTF-8 content even when the panel labels it `application/octet-stream`; writes use `text/plain`. Binary files use the base64 transfer tools. |
+| Directory, rename, delete | Uses `files/create-directory`, `files/rename`, and `files/delete`. Deletion goes to Calagopus trash by default; set `permanent=true` to permanently delete. |
+| Backups | Uses native backup create/list/delete routes and the `ignored_files` field. |
+| Binary upload/download | Obtains short-lived signed URLs from Calagopus and transfers bounded data directly to the Wings host. The exact hostname must be listed in `MAP_TRUSTED_WINGS_HOSTS` unless it matches the panel hostname. |
+
+Other Calagopus endpoints (activity, startup, schedules, databases, allocations, backup restore/groups, search, archives, and more) remain available through `panel_api_request` with `api="native"` and a path from that panel's OpenAPI reference. The public documentation page is `/api`; the OpenAPI JSON is at the panel root `/openapi.json`.
 
 | Tool | Parameters | Purpose |
 | --- | --- | --- |
@@ -60,4 +74,4 @@ For other MCSManager endpoints, use `panel_api_request` with `api="native"` and 
 | `server_list_backups` | `panel_id, server_id` | Lists backups. |
 | `server_delete_backup` | `panel_id, server_id, backup_id` | Deletes a backup. |
 
-MAP obtains a signed URL for file transfers from the panel, then contacts Wings directly. That hostname must be the panel hostname or an exact entry in `MAP_TRUSTED_WINGS_HOSTS`. Redirects are disabled, signed URLs are not returned, and bodies are bounded.
+MAP obtains a signed URL for file transfers from the panel, then contacts Wings directly. That hostname must be the panel hostname or an exact entry in `MAP_TRUSTED_WINGS_HOSTS`. Redirects are disabled, signed URLs are not returned, and bodies are bounded. Calagopus returns `{url}` directly; Pterodactyl/Pelican return `attributes.url`.

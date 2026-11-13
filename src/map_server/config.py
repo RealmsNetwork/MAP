@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
@@ -59,6 +60,9 @@ def _read_panels() -> dict[str, dict[str, Any]]:
     """Load panel URLs and API keys from server-side environment only."""
     panels: dict[str, dict[str, Any]] = {}
     raw = os.getenv("MAP_PANELS_JSON", "").strip()
+    # Explicit environment configuration must override the on-disk production file.
+    # Keep the legacy base64 value ahead of the file so existing deploys and tests
+    # can deliberately supply an override without being shadowed by /etc config.
     if not raw:
         encoded = os.getenv("MAP_PANELS_JSON_B64", "").strip()
         if encoded:
@@ -66,6 +70,13 @@ def _read_panels() -> dict[str, dict[str, Any]]:
                 raw = base64.b64decode(encoded, validate=True).decode("utf-8")
             except Exception as exc:
                 raise RuntimeError("MAP_PANELS_JSON_B64 must be base64-encoded UTF-8 JSON.") from exc
+    if not raw:
+        config_path = Path(os.getenv("MAP_PANELS_FILE", "/etc/realmsnetwork-map/panels.json"))
+        if config_path.is_file():
+            try:
+                raw = config_path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise RuntimeError(f"Cannot read panel JSON file: {config_path}") from exc
     if raw:
         try:
             entries = json.loads(raw)

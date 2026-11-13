@@ -37,6 +37,18 @@ def test_list_panels_never_returns_api_keys(monkeypatch):
     assert "secret-value" not in json.dumps(result)
 
 
+def test_file_environment_panel_config(monkeypatch, tmp_path):
+    config = [{"id": "file-panel", "name": "File Panel", "base_url": "https://panel.example.test", "api_key": "file-key", "provider": "calagopus"}]
+    config_file = tmp_path / "panels.json"
+    config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("MAP_PANELS_JSON", "")
+    monkeypatch.setenv("MAP_PANELS_JSON_B64", "")
+    monkeypatch.setenv("MAP_PANELS_FILE", str(config_file))
+    result = server.list_panels()
+    assert result["count"] == 1
+    assert result["panels"][0]["provider"] == "calagopus"
+
+
 def test_base64_environment_panel_config(monkeypatch):
     config = [{"id": "bp", "name": "ByteProject", "base_url": "https://panel.example.test", "client_api_key": "test-key"}]
     encoded = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
@@ -479,8 +491,13 @@ def test_calagopus_alias_uses_native_api_and_non_pterodactyl_auth(monkeypatch):
     assert calls[0][1] == "https://calagopus.example.test/api/client/servers"
     assert calls[0][2]["headers"]["Authorization"] == "Bearer calagopus-secret-token"
     assert "calagopus-secret-token" not in json.dumps(server.list_panels())
-    with pytest.raises(ValueError, match="not implemented for provider"):
-        server.server_power("cal", "abcd1234", "start")
+    response = FakeResponse(body=b'{"ok":true}')
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    result = server.server_power("cal", "abcd1234", "start")
+    assert result["ok"] is True
+    assert calls[-1][0] == "POST"
+    assert calls[-1][1] == "https://calagopus.example.test/api/client/servers/abcd1234/power"
+    assert json.loads(calls[-1][2]["data"]) == {"action": "start"}
 
 
 def test_calagopus_default_path_and_auth_configuration(monkeypatch):
@@ -496,7 +513,141 @@ def test_calagopus_default_path_and_auth_configuration(monkeypatch):
     panel = server._panel("cal")
     assert panel["api_base_path"] == "/api"
     assert panel["auth_type"] == "bearer"
-    assert server.list_panels()["panels"][0]["dedicated_server_tools"] is False
+    assert server.list_panels()["panels"][0]["dedicated_server_tools"] is True
+
+
+def test_calagopus_server_tools_route_to_native_client_api(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([
+        {"id": "cal", "provider": "calagopus", "base_url": "https://calagopus.example.test", "api_key": "cal-key"}
+    ]))
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if url.endswith("/files/contents"):
+            return FakeResponse(body=b"hello from Calagopus", headers={"content-type": "application/octet-stream"})
+        return FakeResponse(body=b'{"ok":true}')
+
+    monkeypatch.setattr(client.requests, "request", fake_request)
+    sid = "12345678-1234-1234-1234-123456789abc"
+
+    assert server.server_resources("cal", sid)["ok"] is True
+    assert calls[-1][1].endswith(f"/api/client/servers/{sid}/resources")
+
+    assert server.server_console_command("cal", sid, "list")["ok"] is True
+    assert json.loads(calls[-1][2]["data"]) == {"command": "list"}
+
+    assert server.server_list_files("cal", sid, "/plugins", page=2, per_page=75)["ok"] is True
+    assert calls[-1][2]["params"] == {"directory": "/plugins", "page": 2, "per_page": 75}
+
+    read = server.server_read_file("cal", sid, "/plugins/example.yml")
+    assert read["data"] == "hello from Calagopus"
+
+    assert server.server_write_file("cal", sid, "/plugins/example.yml", "hello")["ok"] is True
+    assert calls[-1][0] == "POST"
+    assert calls[-1][2]["data"] == b"hello"
+
+    assert server.server_create_directory("cal", sid, "new-folder", "/plugins")["ok"] is True
+    assert calls[-1][1].endswith("/files/create-directory")
+    assert json.loads(calls[-1][2]["data"]) == {"name": "new-folder", "root": "/plugins"}
+
+    assert server.server_delete_files("cal", sid, ["old.yml"], "/plugins")["ok"] is True
+    assert json.loads(calls[-1][2]["data"]) == {"root": "/plugins", "files": ["old.yml"], "permanent": False}
+
+    assert server.server_rename_files("cal", sid, "/plugins", [{"from": "a", "to": "b"}])["ok"] is True
+    assert json.loads(calls[-1][2]["data"]) == {"root": "/plugins", "files": [{"from": "a", "to": "b"}]}
+
+    assert server.server_create_backup("cal", sid, "test", ["cache/**"])["ok"] is True
+    assert json.loads(calls[-1][2]["data"]) == {"ignored_files": ["cache/**"], "name": "test"}
+
+    assert server.server_list_backups("cal", sid)["ok"] is True
+    assert calls[-1][2]["params"] == {"page": 1, "per_page": 50, "ungrouped": False}
+
+    backup_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert server.server_delete_backup("cal", sid, backup_id)["ok"] is True
+    assert calls[-1][0] == "DELETE"
+    assert calls[-1][1].endswith(f"/backups/{backup_id}")
+
+
+def test_calagopus_signed_file_transfer_uses_trusted_host(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([
+        {"id": "cal", "provider": "calagopus", "base_url": "https://calagopus.example.test", "api_key": "cal-key"}
+    ]))
+    monkeypatch.setenv("MAP_TRUSTED_WINGS_HOSTS", "node.example.test")
+    calls = []
+    signed = FakeResponse(body=b'{"url":"https://node.example.test/files?token=signed"}')
+    file_response = FakeResponse(body=b"binary-content", headers={"content-type": "application/octet-stream", "content-length": "14"})
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return signed if len(calls) == 1 else file_response
+
+    monkeypatch.setattr(client.requests, "get", fake_get)
+    url, error = client._signed_wings_url(
+        "cal", "12345678-1234-1234-1234-123456789abc", "download",
+        {"root": "/plugins", "files": ["x.zip"], "directory": False, "archive_format": "zip"},
+    )
+    assert error is None
+    assert url == "https://node.example.test/files?token=signed"
+    assert calls[0][0] == "https://calagopus.example.test/api/client/servers/12345678-1234-1234-1234-123456789abc/files/download"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer cal-key"
+
+
+def test_calagopus_base64_upload_and_download(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([
+        {"id": "cal", "provider": "calagopus", "base_url": "https://calagopus.example.test", "api_key": "cal-key"}
+    ]))
+    monkeypatch.setenv("MAP_TRUSTED_WINGS_HOSTS", "node.example.test")
+    signed_upload = FakeResponse(body=b'{"url":"https://node.example.test/upload/file?token=up"}')
+    signed_download = FakeResponse(body=b'{"url":"https://node.example.test/download/file?token=down"}')
+    downloaded = FakeResponse(body=b"file-bytes", headers={"content-type": "application/octet-stream", "content-length": "10"})
+    get_responses = iter([signed_upload, signed_download, downloaded])
+    monkeypatch.setattr(client.requests, "get", lambda *args, **kwargs: next(get_responses))
+    uploads = []
+    class FakeMime:
+        def __init__(self):
+            self.parts = []
+            self.closed = False
+        def addpart(self, **kwargs):
+            self.parts.append(kwargs)
+        def close(self):
+            self.closed = True
+    monkeypatch.setattr(server, "CurlMime", FakeMime)
+    monkeypatch.setattr(
+        server.requests, "post",
+        lambda url, **kwargs: (uploads.append((url, kwargs)) or FakeResponse(status_code=201, body=b"")),
+    )
+
+    uploaded = server.server_upload_file_base64(
+        "cal", "12345678", "test.txt", base64.b64encode(b"upload-me").decode(), "/tmp"
+    )
+    assert uploaded["ok"] is True
+    assert uploaded["bytes_uploaded"] == 9
+    assert uploads[0][0] == "https://node.example.test/upload/file?token=up"
+    assert uploads[0][1]["params"] == {"directory": "/tmp"}
+    assert uploads[0][1]["multipart"].parts == [{
+        "name": "files", "filename": "test.txt",
+        "content_type": "application/octet-stream", "data": b"upload-me",
+    }]
+    assert uploads[0][1]["multipart"].closed is True
+
+    downloaded_result = server.server_download_file_base64("cal", "12345678", "/plugins/test.txt")
+    assert downloaded_result["ok"] is True
+    assert base64.b64decode(downloaded_result["content_base64"]) == b"file-bytes"
+
+
+def test_calagopus_rejects_untrusted_signed_file_host(monkeypatch):
+    monkeypatch.setenv("MAP_PANELS_JSON", json.dumps([
+        {"id": "cal", "provider": "calagopus", "base_url": "https://calagopus.example.test", "api_key": "cal-key"}
+    ]))
+    monkeypatch.setenv("MAP_TRUSTED_WINGS_HOSTS", "other.example.test")
+    monkeypatch.setattr(
+        client.requests, "get",
+        lambda *args, **kwargs: FakeResponse(body=b'{"url":"https://node.example.test/file?token=signed"}'),
+    )
+    url, error = client._signed_wings_url("cal", "12345678", "upload", {})
+    assert url is None
+    assert "node.example.test" in error["error"]
 
 
 def test_calagopus_provider_alias_is_available_in_registry():
@@ -711,6 +862,7 @@ def test_legacy_pterodactyl_version_setting_is_validated(monkeypatch):
     monkeypatch.setenv("PANEL_VERSION", "not-a-version")
     monkeypatch.delenv("MAP_PANELS_JSON", raising=False)
     monkeypatch.delenv("MAP_PANELS_JSON_B64", raising=False)
+    monkeypatch.setenv("MAP_PANELS_FILE", "/tmp/map-test-no-panel-file.json")
 
     with pytest.raises(RuntimeError, match="PANEL_VERSION must be auto, 1.x, or 2.x"):
         server.list_panels()

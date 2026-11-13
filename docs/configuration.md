@@ -4,7 +4,7 @@ MAP reads environment variables at startup. A local `.env` is loaded for develop
 
 ## Multiple panels
 
-Set `MAP_PANELS_JSON` to a JSON array. Each item has these fields:
+Store the panel array in `/etc/realmsnetwork-map/panels.json` (or set `MAP_PANELS_FILE` to another JSON file). Each item has these fields:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -134,8 +134,9 @@ Set MCSManager `panel_version` to `9.x` or `10.x` so MAP can choose the correct 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAP_PANELS_JSON` | empty | Multi-panel JSON; takes precedence over base64 config. |
-| `MAP_PANELS_JSON_B64` | empty | Base64-encoded UTF-8 JSON, useful for systemd EnvironmentFile values. |
+| `MAP_PANELS_FILE` | `/etc/realmsnetwork-map/panels.json` | Path to the regular JSON file containing panel definitions; used when neither JSON environment override is set. |
+| `MAP_PANELS_JSON` | empty | Inline JSON override; takes precedence over every other panel source. |
+| `MAP_PANELS_JSON_B64` | empty | Legacy Base64-encoded JSON override; used before the panel file. |
 | `PANEL_BASE_URL` | empty | Legacy single-panel URL when multi-panel variables are empty. |
 | `PANEL_NAME` | `Default Pterodactyl Panel` | Legacy display name. |
 | `PANEL_PROVIDER` | `pterodactyl` | Legacy single-panel provider; supports Pterodactyl or Pelican. |
@@ -158,8 +159,6 @@ Set MCSManager `panel_version` to `9.x` or `10.x` so MAP can choose the correct 
 
 ## Production configuration
 
-Prefer `deploy/configure_panels.py` for systemd. It reads keys with hidden input and writes the panel array in base64 form to `/etc/realmsnetwork-map/map.env`. The file should remain root-owned, group-readable by the MAP account, and mode `0640`.
-
-Base64 is encoding, not encryption. Filesystem permissions still matter. The helper preserves the server name and request/response/file-size limits and prompts for each provider's authentication type. Never put secrets in command-line arguments, committed JSON, screenshots, bug reports, or prompts.
+Use `/etc/realmsnetwork-map/panels.json` for regular, readable JSON panel definitions, including API credentials. Keep it root-owned, group-readable by the MAP account, and mode `0640`. The interactive `deploy/configure_panels.py` helper prompts for API keys without echoing them and writes the same JSON file. Never commit the file or paste secrets into screenshots, bug reports, or prompts.
 
 MAP's OAuth and AMP session caches are process-local and keyed only by non-secret panel identity fields. **Restart the MAP service after rotating an OAuth client secret, AMP password, or TOTP configuration** so cached tokens and sessions are discarded.

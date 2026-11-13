@@ -20,8 +20,8 @@ MAP is a self-hosted [Model Context Protocol](https://modelcontextprotocol.io/) 
 
 - **Multiple providers:** each panel has its own ID, origin, provider type, endpoint prefix, and credentials.
 - **Broad API access:** namespaced Client/Application/Admin requests for compatible panels and a generic native REST request tool supporting GET, POST, PUT, PATCH, and DELETE.
-- **Server operations:** Pterodactyl/Pelican server power/resources/console/file/backup tools; native MCSManager instance list, power, console-command, and output-log tools; AMP session-based native calls.
-- **Files and backups:** browse/read/write, create directories, rename/delete files, manage backups, and transfer bounded binary files through trusted Wings hosts.
+- **Server operations:** Pterodactyl/Pelican and Calagopus server listing, power/resources/console/file/backup tools; native MCSManager instance list, power, console-command, and output-log tools; AMP session-based native calls.
+- **Files and backups:** browse and paginate, read UTF-8 text, write, create directories, rename, trash/delete, manage backups, and transfer bounded binary files through exact trusted Wings hosts.
 - **Two MCP transports:** Streamable HTTP for hosted deployments and stdio for local MCP clients.
 - **Customization:** configure the MCP display name, request/response limits, native API prefix, auth scheme/header/query parameter, optional custom headers, panel routing, timeout, and trusted Wings hosts.
 - **Deployment options:** Docker, systemd, and interactive panel configuration.
@@ -85,7 +85,7 @@ These are placeholders, not working credentials. Each host has its own base URL 
 | [Pterodactyl](https://docs.pterodactyl.io/v1/api) 1.x | `client` / `application` | Dedicated server tools and generic API; Client server listing uses the older `GET /api/client` route. Admin API is unavailable in 1.x. |
 | [Pterodactyl](https://docs.pterodactyl.io/v2/api) 2.x | `client` / `application` / `admin` | Dedicated server tools plus the 2.x Admin namespace when configured. |
 | [Pelican Panel](https://pelican.dev/docs/panel/advanced/api-docs/) | `client` / `application` | Pterodactyl-compatible Client/Application APIs. |
-| [Calagopus](https://calagopus.com/docs/) | `native` | Generic/native REST adapter with default prefix `/api`; its API and keys are not compatible with Pterodactyl. The native API reference is available on each Calagopus panel at `/api`. |
+| [Calagopus](https://calagopus.com/docs/) | `native` | Native REST adapter with default prefix `/api`, plus dedicated server listing, resources, power, console, file CRUD/read/write, signed binary transfers, and backup tools. Its API and keys are not Pterodactyl-compatible. The OpenAPI reference is available at the panel root `/openapi.json`. |
 | [MCSManager](https://docs.mcsmanager.com/apis/api_instance.html) 10.x | `native` | Dedicated instance list, start/stop/restart/kill, command, and output-log tools; native REST access for other endpoints. MCSManager 9.x uses `remote_uuid` and the adapter chooses its legacy parameter; 10.x uses `daemonId`. State-changing actions use POST. Confirm your configured `panel_version` matches the installation. |
 | [Crafty Controller](https://docs.craftycontrol.com/pages/developer-guide/api-reference/v2/) API v2 | `native` | Generic REST adapter, default prefix `/api/v2`, configurable auth header/scheme or other supported auth mode. |
 | [PufferPanel](https://docs.pufferpanel.com/en/2.x/guides/common-problems.html) 2.x | `native` | Generic REST adapter with OAuth2 client-credentials token refresh, or a directly supplied bearer token. |
